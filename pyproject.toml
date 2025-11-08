@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lamb"
+version = "0.1.0"
+authors = [
+    {name = "Gabriel Vitor Klaumann Gubert", email = "Gabriel.KlaumannGubert@thi.de"},
+]
+dependencies = [
+    "antlr4-python3-runtime==4.13.1",
+    "jupyter-ai",
+    "tomli",
+    "langchain"
+]
+
+[project.entry-points."jupyter_ai.model_providers"]
+catialyst = "lamb.jupyter.providers:LambProvider"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"catialyst.data" = ["*.json", "*.csv"]

@@ -1,0 +1,6 @@
+matplotlib
+numpy
+pandas
+tqdm
+tree-sitter
+tree-sitter-html
