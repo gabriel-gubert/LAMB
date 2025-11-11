@@ -16,10 +16,10 @@ dependencies = [
 ]
 
 [project.entry-points."jupyter_ai.model_providers"]
-catialyst = "lamb.jupyter.providers:LambProvider"
+lamb = "lamb.jupyter.providers:LambProvider"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"catialyst.data" = ["*.json", "*.csv"]
+"lamb.data" = ["*.json", "*.csv"]
