@@ -1,4 +1,4 @@
-# Generated from src/catialyst-antlr4-vba/grammar/vba.g4 by ANTLR 4.13.1
+# Generated from src/lamb-antlr4-vba/grammar/vba.g4 by ANTLR 4.13.1
 from antlr4 import *
 if "." in __name__:
     from .vbaParser import vbaParser
