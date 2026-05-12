@@ -4,22 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lamb"
-version = "0.1.0"
+version = "1.0"
 authors = [
     {name = "Gabriel Vitor Klaumann Gubert", email = "Gabriel.KlaumannGubert@thi.de"},
 ]
 dependencies = [
-    "antlr4-python3-runtime==4.13.1",
     "jupyter-ai",
-    "tomli",
-    "langchain"
+    "jupyter-ai-magics",
+    "toml",
+    "langchain",
+    "langchain_openai",
+    "langgraph",
+    "numpy",
+    "tree_sitter_language_pack"
 ]
+
+[project.scripts]
+lamb = "lamb.cli:main"
 
 [project.entry-points."jupyter_ai.model_providers"]
 lamb = "lamb.jupyter.providers:LambProvider"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.setuptools.package-data]
-"lamb.data" = ["*.json", "*.csv"]
