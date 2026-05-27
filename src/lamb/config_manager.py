@@ -5,8 +5,8 @@ from typing import Any
 class ConfigManager:
     """
     Manages configuration with a hierarchy similar to git config:
-    Global: ~/.lambconfig.toml
-    Local:  ./config.toml
+    Global: ~/.lamb/config.toml
+    Local:  ./lambconfig.toml
     """
 
     def __init__(self):

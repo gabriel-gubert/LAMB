@@ -1,4 +1,3 @@
-
 from typing import TypeVar, Type, Any, Dict
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -84,10 +83,23 @@ def mapper_agent(config_manager: ConfigManager) -> MapperAgent:
     Supports local vLLM deployments and extensive ChatOpenAI settings.
     """
 
+    multi_agent = config_manager.get("tasks.mapping.multi_agent", False)
+
+    resolver_agent_1 = create_openai_component(ChatOpenAI, config_manager, "general_resolution", CHATOPENAI_DEFAULT_BLUEPRINT)
+    resolver_agent_2 = None
+    resolver_agent_3 = None
+
+    if multi_agent:
+        resolver_agent_2 = create_openai_component(ChatOpenAI, config_manager, "lexical_resolution", CHATOPENAI_DEFAULT_BLUEPRINT)
+        resolver_agent_3 = create_openai_component(ChatOpenAI, config_manager, "semantic_resolution", CHATOPENAI_DEFAULT_BLUEPRINT)
+
     return MapperAgent(
         extractor=create_openai_component(ChatOpenAI, config_manager, "extraction", CHATOPENAI_DEFAULT_BLUEPRINT),
         embedder=create_openai_component(OpenAIEmbeddings, config_manager, "embedding", OPENAIEMBEDDINGS_DEFAULT_BLUEPRINT),
-        resolver=create_openai_component(ChatOpenAI, config_manager, "resolution", CHATOPENAI_DEFAULT_BLUEPRINT),
+        resolver_agent_1=resolver_agent_1,
+        resolver_agent_2=resolver_agent_2,
+        resolver_agent_3=resolver_agent_3,
+        multi_agent=multi_agent,
         confidence_floor=config_manager.get("tasks.mapping.confidence_floor", 0.65),
         confidence_threshold=config_manager.get("tasks.mapping.confidence_threshold", 0.92),
         ambiguous_margin=config_manager.get("tasks.mapping.ambiguous_margin", 0.05),

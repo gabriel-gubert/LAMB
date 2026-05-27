@@ -150,11 +150,23 @@ Analyze the provided file content and extract all structural API elements into a
 - Extract classes, interfaces, structs, methods, properties, exported constants, functions, and REST API routes.
 - Focus on public-facing contracts; ignore internal helper functions or private variables.
 - Maintain technical precision in the signature to ensure accurate semantic matching.
+- For each element, identify the following components:
+
+* **namespace**: The full package, namespace, or module path.
+* **class_or_interface**: The name of the containing class, interface, or struct. Use "Global" if none.
+* **member**: The name of the specific function, method, constant, or endpoint.
+* **signature**: The full technical signature (including name, parameters, return types, or HTTP verbs).
+* **summary**: The textual documentation extracted from the source text. You must adhere strictly to the following constraints when generating this value:
+1. **Copy-Paste Extraction:** Act exclusively as a direct extraction tool to harvest all docstrings, comments, and raw text.
+2. **No Extraneous Text:** Do not generate, summarize, or add any introductory text, concluding remarks, or explanations. Do not include any text or commentary that does not exist inside the original documentation artifact.
+3. **Strict Markdown Format:** Convert the extracted text strictly into Markdown. Transform any non-Markdown markup languages (such as HTML tags, XML, or Javadoc-style annotations) into their exact Markdown equivalents.
+4. **Structural Completeness:** Do not settle for a single sentence. Use Markdown headers, bulleted lists, tables, and bold text to structurally preserve and synthesize the full scope of behavior exactly as written (including parameters, side effects, error handling, and business logic).
+5. **Explicit Info Only:** Only include information explicitly stated in the source text, ensuring the final output is a clean, fully compliant Markdown block.
 
 ### OUTPUT FORMATTING
 Output a flat list of objects in the format below:
 
-```python
+```json
 [
   {
     "namespace": str,
@@ -166,43 +178,56 @@ Output a flat list of objects in the format below:
 ]
 ```
 
-For each element, identify the following components:
-*   **namespace**: The full package, namespace, or module path.
-*   **class_or_interface**: The name of the containing class, interface, or struct. Use "Global" if none.
-*   **member**: The name of the specific function, method, constant, or endpoint.
-*   **signature**: The full technical signature (including name, parameters, return types, or HTTP verbs).
-*   **summary**: A comprehensive extraction of all documentation (docstrings, comments, raw text) provided strictly and solely in Markdown format. You must transform any non-Markdown markup languages (such as HTML tags, XML, or Javadoc-style annotations) into their proper Markdown equivalents. Do not settle for a single sentence; use Markdown headers, bulleted lists, tables, and bold text to synthesize the full scope of behavior, including parameters, side effects, error handling, and business logic. Only include information explicitly stated in the source text, ensuring the final output is a clean, fully compliant Markdown block.
 ### EXAMPLES
 
-```python
+**Input:**
+
+```html
+<div class="namespace">ForgeEngine.Core</div>
+<main class="class-doc">
+    <h1>Class: PhysicsBody</h1>
+    <p>Represents a rigid physical object within the game world simulator.</p>
+    
+    <div class="method-doc">
+        <h3>Method: ApplyImpulse</h3>
+        <p>Syntax: <code>public void ApplyImpulse(Vector3 force, bool ignoreMass = false)</code></p>
+        <div class="description">
+            Applies an instantaneous force vector directly to the center of mass of the physics object.
+            <p><b>Note:</b> This will modify the linear velocity vector immediately and wake up the body if it is currently sleeping.</p>
+            
+            <h4>Parameters:</h4>
+            <ul>
+                <li><code>force</code>: The directional impulse force vector expressed in Newtons per second.</li>
+                <li><code>ignoreMass</code>: If set to true, velocity changes bypass the mass properties of the entity, acting as a direct velocity change.</li>
+            </ul>
+            
+            <h4>Exceptions:</h4>
+            <table>
+                <tr>
+                    <th>Type</th>
+                    <th>Condition</th>
+                </tr>
+                <tr>
+                    <td>InvalidOperationException</td>
+                    <td>Thrown if the target physics body has not been initialized or is marked static.</td>
+                </tr>
+            </table>
+        </div>
+    </div>
+</main>
+
+```
+
+**Output:**
+
+```json
 [
   {
-    "namespace": "com.auth.service",
-    "class_or_interface": "UserManager",
-    "member": "validate_session",
-    "signature": "validate_session(token: str) -> bool",
-    "summary": "### Session Validation Logic\nVerifies the integrity and expiration of a JWT session token.\n- **Validation Steps**: Decodes the header, checks the signature against the public key, and verifies the `exp` claim.\n- **Returns**: `True` if valid; `False` if expired or malformed.\n- **Exceptions**: May throw `ConnectionError` if the Auth server is unreachable.\n"
-  },
-  {
-    "namespace": "org.api.orders",
-    "class_or_interface": "Global",
-    "member": "POST /checkout",
-    "signature": "async function createOrder(cart: CartItem[]): Promise<Order>",
-    "summary": "### Order Creation Endpoint\nProcesses the final checkout for a user shopping cart.\n- **Logic**: Iterates through `CartItem` array to verify inventory levels.\n- **Persistence**: Creates a new record in the `Orders` table with a 'Pending' status.\n- **Side Effects**: Triggers a notification to the fulfillment service and clears the user's local session cache.\n"
-  },
-  {
-    "namespace": "System.Data.Client",
-    "class_or_interface": "IDbConnection",
-    "member": "ConnectionString",
-    "signature": "public string ConnectionString {{ get; set; }}",
-    "summary": "### Connection Configuration\nGets or sets the string used to open a database connection.\n- **Format**: Expected to contain provider-specific keys (e.g., `Server`, `Database`, `User ID`).\n- **Security**: Must be encrypted at rest. Setting this property while the connection is open will throw an `InvalidOperationException`.\n"
-  },
-  {
-    "namespace": "graphics::engine::vulkan",
-    "class_or_interface": "Renderer",
-    "member": "SubmitFrame",
-    "signature": "void SubmitFrame(const FrameData* data, uint32_t timeout_ms)",
-    "summary": "### Frame Submission Pipeline\nSubmits the recorded command buffers to the graphics queue for hardware execution.\n- **Synchronization**: Uses a fence to ensure the GPU has finished processing the previous frame before writing new data.\n- **Memory Management**: The `FrameData` pointer must remain valid until the submission call returns.\n- **Performance**: High-frequency call; should be invoked on the main render thread to minimize latency.\n"
+    "namespace": "ForgeEngine.Core",
+    "class_or_interface": "PhysicsBody",
+    "member": "ApplyImpulse",
+    "signature": "public void ApplyImpulse(Vector3 force, bool ignoreMass = false)",
+    "summary": "Applies an instantaneous force vector directly to the center of mass of the physics object.\n\n**Note:** This will modify the linear velocity vector immediately and wake up the body if it is currently sleeping.\n\n#### Parameters:\n* `force`: The directional impulse force vector expressed in Newtons per second.\n* `ignoreMass`: If set to true, velocity changes bypass the mass properties of the entity, acting as a direct velocity change.\n\n#### Exceptions:\n| Type | Condition |\n| :--- | :--- |\n| InvalidOperationException | Thrown if the target physics body has not been initialized or is marked static. |"
   }
 ]
 ```
@@ -211,7 +236,7 @@ For each element, identify the following components:
 """.strip()
 
 
-def get_mapper_resolution_prompt():
+def get_general_mapper_resolution_prompt():
     return f"""
 ### ROLE & OBJECTIVE
 You are an expert Systems Architect mapping Legacy API elements to a New version. Analyze the semantic relationship and functional intent between the legacy source and the potential candidates. You must select the correct target(s) and classify the relationship logic.
@@ -219,7 +244,7 @@ You are an expert Systems Architect mapping Legacy API elements to a New version
 ### INSTRUCTIONS & GUIDELINES
 You will receive a list of objects. Each object follows this structure:
 
-```python
+```json
 {{
   "v1_element": {{ "namespace": str, "class_or_interface": str, "member": str, "signature": str, "summary": str }},
   "potential_targets": [ {{ "namespace": str, "class_or_interface": str, "member": str, "signature": str, "summary": str }} ]
@@ -244,7 +269,7 @@ You will receive a list of objects. Each object follows this structure:
 ### OUTPUT FORMATTING
 You must return a list of objects in the format below:
 
-```python
+```json
 [
   {{
     "v1_element": {{ ... }},
@@ -265,7 +290,7 @@ You must return a list of objects in the format below:
 
 **Input:**
 
-```python
+```json
 {{
   "v1_element": {{
     "namespace": "com.legacy.io",
@@ -288,7 +313,7 @@ You must return a list of objects in the format below:
 
 **Output:**
 
-```python
+```json
 {{
   "v1_element": {{
     "namespace": "com.legacy.io",
@@ -315,7 +340,7 @@ You must return a list of objects in the format below:
 
 **Input:**
 
-```python
+```json
 {{
   "v1_element": {{
     "namespace": "com.legacy.auth",
@@ -345,7 +370,7 @@ You must return a list of objects in the format below:
 
 **Output:**
 
-```python
+```json
 {{
   "v1_element": {{
     "namespace": "com.legacy.auth",
@@ -373,6 +398,337 @@ You must return a list of objects in the format below:
   ],
   "reason": "The legacy monolithic call has been decoupled for better security auditing. **Migration Path:**\\n1. Update identity data via `ProfileService`.\\n2. Update permissions via `AccessControl`."
 }}
+```
+
+### INPUT DATA
+""".strip()
+
+def get_lexical_mapper_resolution_prompt():
+    return f"""
+### ROLE & OBJECTIVE
+You are an expert Systems Architect specializing in Strict Type Safety and API Contract Mapping. Your objective is to map Legacy API elements to a New version by analyzing raw signatures, parameter constraints, structural hierarchies, and formal code contracts. You prioritize strict structural fit over loose semantic matching.
+
+### INSTRUCTIONS & GUIDELINES
+You will receive a list of objects. Each object follows this structure:
+
+```json
+{{
+  "v1_element": {{ "namespace": str, "class_or_interface": str, "member": str, "signature": str, "summary": str }},
+  "potential_targets": [ {{ "namespace": str, "class_or_interface": str, "member": str, "signature": str, "summary": str }} ]
+}}
+```
+
+**DECISION CLASSIFICATIONS:**
+*   1:1 - A single clean structural layout fit exists. Add exactly ONE target to 'selected_targets'.
+*   1:N - The parameter list or return payload types have been decomposed or split across distinct system boundaries. Add MULTIPLE targets to 'selected_targets'.
+*   N:1 - Multiple tight legacy interfaces consolidate down to a unified generic typed method. Add exactly ONE target to 'selected_targets'.
+*   N:N - Complete structural reorganization of parameters and types across multiple interfaces. Add MULTIPLE targets to 'selected_targets'.
+*   AMBIGUOUS - Multiple targets offer a structurally identical signature type footprint, making a deterministic automated selection impossible without external state context. Add the top 2 candidates.
+*   DEPRECATED - No targets match the fundamental data contract types, or the underlying technical capability is unsupported by the new framework. Leave 'selected_targets' empty [].
+
+**CRITICAL RULES:**
+*   **Contract-First Thinking:** Evaluate return types, parameter count, and namespace hierarchies before reading the textual 'summary'.
+*   For the 'reason' field, output ONLY valid Markdown focusing on data contract transformations, type compatibility, or casting requirements.
+*   If the decision is a straightforward 1:1 match by signature or exact type logic, output an empty string "" for the 'reason'.
+*   If 'potential_targets' is empty, the decision MUST be DEPRECATED.
+
+### OUTPUT FORMATTING
+You must return a list of objects in the format below:
+
+```json
+[
+  {{
+    "v1_element": {{ ... }},
+    "decision": "1:1|1:N|N:1|N:N|AMBIGUOUS|DEPRECATED",
+    "selected_targets": [ {{ ... }} ],
+    "reason": "Markdown text or empty string"
+  }}
+]
+
+```
+
+### EXAMPLES
+
+**Input:**
+
+```json
+{{
+  "v1_element": {{
+    "namespace": "com.legacy.math",
+    "class_or_interface": "Calculator",
+    "member": "Compute",
+    "signature": "Compute(val: int, rate: float): double",
+    "summary": "Executes core matrix math using raw numerical inputs."
+  }},
+  "potential_targets": [
+    {{
+      "namespace": "org.modern.numeric",
+      "class_or_interface": "Engine",
+      "member": "Evaluate",
+      "signature": "Evaluate(x: Int32, y: Float64): Float64",
+      "summary": "Processes internal calculations."
+    }}
+  ]
+}}
+
+```
+
+**Output:**
+
+```json
+{{
+  "v1_element": {{
+    "namespace": "com.legacy.math",
+    "class_or_interface": "Calculator",
+    "member": "Compute",
+    "signature": "Compute(val: int, rate: float): double",
+    "summary": "Executes core matrix math using raw numerical inputs."
+  }},
+  "decision": "1:1",
+  "selected_targets": [
+    {{
+      "namespace": "org.modern.numeric",
+      "class_or_interface": "Engine",
+      "member": "Evaluate",
+      "signature": "Evaluate(x: Int32, y: Float64): Float64",
+      "summary": "Processes internal calculations."
+    }}
+  ],
+  "reason": ""
+}}
+
+```
+
+### INPUT DATA
+""".strip()
+
+def get_semantic_mapper_resolution_prompt():
+    return f"""
+### ROLE & OBJECTIVE
+You are an expert Domain-Driven Design (DDD) Architect mapping Legacy API components to a modernized framework. Your objective is to map elements by evaluating behavioral semantics, functional side-effects, docstring intention, and business goals. You look past signature transformations to ensure domain operations match up seamlessly.
+
+### INSTRUCTIONS & GUIDELINES
+You will receive a list of objects. Each object follows this structure:
+
+```json
+{{
+  "v1_element": {{ "namespace": str, "class_or_interface": str, "member": str, "signature": str, "summary": str }},
+  "potential_targets": [ {{ "namespace": str, "class_or_interface": str, "member": str, "signature": str, "summary": str }} ]
+}}
+```
+
+**DECISION CLASSIFICATIONS:**
+*   1:1 - The exact same business intent/functional side-effect is handled by a new modern endpoint. Add exactly ONE target to 'selected_targets'.
+*   1:N - The old routine handled a combination of business actions that have now been correctly isolated into decoupled bounded domains. Add MULTIPLE targets to 'selected_targets'.
+*   N:1 - Redundant, overlapping legacy operational hooks have been unified under a single cohesive domain method. Add exactly ONE target to 'selected_targets'.
+*   N:N - High-level structural modernization of cross-cutting logic workflows. Add MULTIPLE targets to 'selected_targets'.
+*   AMBIGUOUS - The system intent splits across different architectural targets, requiring a deeper functional decision review. Add the top 2 candidate targets.
+*   DEPRECATED - The underlying business capability or design pattern is no longer relevant or safe in the modern target architecture. Leave 'selected_targets' empty [].
+
+**CRITICAL RULES:**
+*   **Behavior-First Thinking:** Analyze the 'summary' and structural names for intent. Namespaces and type footprints change constantly during a rewrite—look at *what the code actually accomplishes*.
+*   For the 'reason' field, output ONLY valid Markdown explicitly documenting the architectural shift, domain decoupling pattern, or business rationale for your decisions.
+*   If the decision represents an identical, un-decoupled behavioral mapping transition, output an empty string "" for the 'reason'.
+*   If 'potential_targets' is empty, the decision MUST be DEPRECATED.
+
+### OUTPUT FORMATTING
+You must return a list of objects in the format below:
+
+```json
+[
+  {{
+    "v1_element": {{ ... }},
+    "decision": "1:1|1:N|N:1|N:N|AMBIGUOUS|DEPRECATED",
+    "selected_targets": [ {{ ... }} ],
+    "reason": "Markdown text or empty string"
+  }}
+]
+```
+
+### EXAMPLES
+
+**Input:**
+
+```json
+{{
+  "v1_element": {{
+    "namespace": "com.legacy.store",
+    "class_or_interface": "CartManager",
+    "member": "Finalize",
+    "signature": "Finalize(cartId: String): Void",
+    "summary": "Locks user cart, runs inventory validation checking, saves billing history state, and fires shipping events."
+  }},
+  "potential_targets": [
+    {{
+      "namespace": "org.modern.checkout",
+      "class_or_interface": "OrderService",
+      "member": "PlaceOrder",
+      "signature": "PlaceOrder(id: UUID): OrderResult",
+      "summary": "Initiates purchase transactional workflows."
+    }},
+    {{
+      "namespace": "org.modern.logistics",
+      "class_or_interface": "FulfillmentHub",
+      "member": "ScheduleDelivery",
+      "signature": "ScheduleDelivery(orderId: UUID): Void",
+      "summary": "Queues physical distribution pipelines for an order."
+    }}
+  ]
+}}
+```
+
+**Output:**
+
+```json
+{{
+  "v1_element": {{
+    "namespace": "com.legacy.store",
+    "class_or_interface": "CartManager",
+    "member": "Finalize",
+    "signature": "Finalize(cartId: String): Void",
+    "summary": "Locks user cart, runs inventory validation checking, saves billing history state, and fires shipping events."
+  }},
+  "decision": "1:N",
+  "selected_targets": [
+    {{
+      "namespace": "org.modern.checkout",
+      "class_or_interface": "OrderService",
+      "member": "PlaceOrder",
+      "signature": "PlaceOrder(id: UUID): OrderResult",
+      "summary": "Initiates purchase transactional workflows."
+    }},
+    {{
+      "namespace": "org.modern.logistics",
+      "class_or_interface": "FulfillmentHub",
+      "member": "ScheduleDelivery",
+      "signature": "ScheduleDelivery(orderId: UUID): Void",
+      "summary": "Queues physical distribution pipelines for an order."
+    }}
+  ],
+  "reason": "The monolithic `Finalize` command violated single-responsibility patterns. **Domain Decoupling:**\\n- Order state transitions are routed to `OrderService`.\\n- Downstream side-effects are decoupled into the asynchronous context of `FulfillmentHub`."
+}}
+```
+
+### INPUT DATA
+""".strip()
+
+def get_consensus_arbitration_prompt():
+    return f"""
+### ROLE & OBJECTIVE
+You are an expert system conflict arbitrator. 3 parallel mapping agents have produced distinct, conflicting architectural proposals for migrating a codebase component from V1 to V2. Review all proposals, evaluate semantic accuracy, and choose the most precise target outcome.
+
+### INSTRUCTIONS & GUIDELINES
+You will receive a list of deadlocked stalemates. Each stalemate contains a clean `source_element` (V1 metadata) and three competing strategic bundles: `agent_1_proposal`, `agent_2_proposal`, and `agent_3_proposal`.
+
+Each proposal contains an array of items representing that agent's complete structural verdict. Each item provides:
+- `mapping_details`: The metadata and complexity asserted by the agent.
+- `v2_target_element`: The full original V2 metadata for that target, or the string "DEPRECATED_OR_NO_TARGET".
+
+**CRITICAL RULES:**
+*   **Evaluate Holistically**: Compare the strategies. One agent might suggest a single replacement (1:1), another might suggest splitting the logic across two targets (1:N), and a third might assert the component was erased entirely (DEPRECATED).
+*   **Reasoning Understanding**: Review the `additional_notes` within each `mapping_details` block to understand the underlying architectural reasoning provided by each individual agent.
+*   **Preserve Bundle Integrity**: You are voting on the best *strategy*. If you choose a 1:N proposal, you must include **all** V2 target elements provided within that specific agent's proposal bundle inside your `selected_targets` list. Do not mix and match items between different agents.
+*   **Handling Deprecations**: If you determine that the agent proposing `{Complexity.DEPRECATED}` has the most accurate architectural strategy, set your `decision` field to `{Complexity.DEPRECATED}` and leave the `selected_targets` list completely empty.
+*   **Semantic Contract**: Prioritize the proposal that best preserves the functional intent, data contracts, and type relationships of the source element.
+
+**DECISION CLASSIFICATIONS:**
+*   {Complexity.ONE_TO_ONE} - Clear single replacement element.
+*   {Complexity.ONE_TO_MANY} - Functionality split across multiple targets.
+*   {Complexity.MANY_TO_ONE} - Consolidated into a shared target.
+*   {Complexity.MANY_TO_MANY} - Complex architectural reorganization.
+*   {Complexity.AMBIGUOUS} - Multiple paths looked valid; you are picking the structurally superior one.
+*   {Complexity.DEPRECATED} - No valid replacement component exists in V2.
+
+### OUTPUT FORMATTING
+You must return a list of objects exactly structured matching the JSON format below:
+
+```json
+[
+  {{
+    "v1_element": {{
+      "namespace": "string",
+      "class_or_interface": "string",
+      "member": "string",
+      "signature": "string"
+    }},
+    "decision": "{"|".join([
+        Complexity.ONE_TO_ONE, 
+        Complexity.ONE_TO_MANY, 
+        Complexity.MANY_TO_ONE, 
+        Complexity.MANY_TO_MANY, 
+        Complexity.AMBIGUOUS, 
+        Complexity.DEPRECATED])}",
+    "selected_targets": [
+      {{
+        "namespace": "string",
+        "class_or_interface": "string",
+        "member": "string",
+        "signature": "string"
+      }}
+    ],
+    "reason": "Markdown text explaining the arbitration choice comprehensively."
+  }}
+]
+```
+
+
+### EXAMPLES
+
+**Input:**
+
+```json
+{{
+  "source_element": {{
+    "namespace": "Legacy.Crypto",
+    "class_or_interface": "Cipher",
+    "member": "EncryptData",
+    "signature": "EncryptData(string raw)",
+    "summary": "Encrypts a raw string using default system algorithms."
+  }},
+  "agent_1_proposal": [
+    {{
+      "mapping_details": {{ "complexity": "{Complexity.ONE_TO_MANY}", "new_member": "EncryptAES" }},
+      "v2_target_element": {{ "namespace": "Secure.Crypto", "class_or_interface": "AESEngine", "member": "EncryptAES", "signature": "EncryptAES(byte[] payload)" }}
+    }},
+    {{
+      "mapping_details": {{ "complexity": "{Complexity.ONE_TO_MANY}", "new_member": "StringToBytes" }},
+      "v2_target_element": {{ "namespace": "Secure.Utils", "class_or_interface": "Conv", "member": "StringToBytes", "signature": "StringToBytes(string s)" }}
+    }}
+  ],
+  "agent_2_proposal": [
+    {{
+      "mapping_details": {{ "complexity": "{Complexity.DEPRECATED}", "new_member": "" }},
+      "v2_target_element": "DEPRECATED_OR_NO_TARGET"
+    }}
+  ],
+  "agent_3_proposal": [
+    {{
+      "mapping_details": {{ "complexity": "{Complexity.ONE_TO_ONE}", "new_member": "EncryptTripleDES" }},
+      "v2_target_element": {{ "namespace": "Secure.Crypto", "class_or_interface": "DESEngine", "member": "EncryptTripleDES", "signature": "EncryptTripleDES(string raw)" }}
+    }}
+  ]
+}}
+```
+
+**Output:**
+
+```json
+[
+  {{
+    "v1_element": {{
+      "namespace": "Legacy.Crypto",
+      "class_or_interface": "Cipher",
+      "member": "EncryptData",
+      "signature": "EncryptData(string raw)"
+    }},
+    "decision": "{Complexity.ONE_TO_MANY}",
+    "selected_targets": [
+      {{ "namespace": "Secure.Crypto", "class_or_interface": "AESEngine", "member": "EncryptAES", "signature": "EncryptAES(byte[] payload)" }},
+      {{ "namespace": "Secure.Utils", "class_or_interface": "Conv", "member": "StringToBytes", "signature": "StringToBytes(string s)" }}
+    ],
+    "reason": "The monolithic V1 encryption routine was decomposed into an explicit string-to-byte pre-processing utility alongside an upgraded AES encryption algorithm wrapper in V2."
+  }}
+]
 ```
 
 ### INPUT DATA

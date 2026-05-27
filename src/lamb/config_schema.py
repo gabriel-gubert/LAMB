@@ -63,10 +63,13 @@ class ConfigSchema:
                 {"flags": ["-o", "--output"], "kwargs": {"help": "Path to save the generated mapping (e.g., map.json)"}},
             ],
             "config_overrides": [
+                {"flags": ["--multi-agent"], "kwargs": {"action": "store_true", "default": None, "help": "Enable multi-agent consensus resolution"}, "config_path": "tasks.mapping.multi_agent"},
+                {"flags": ["--no-multi-agent"], "kwargs": {"action": "store_false", "default": None, "help": "Disable multi-agent consensus resolution (single agent)"}, "config_path": "tasks.mapping.multi_agent"},
+                {"flags": ["--confidence-floor"], "kwargs": {"type": float, "help": "Override mapping confidence floor"}, "config_path": "tasks.mapping.confidence_floor"},
                 {"flags": ["--confidence-threshold"], "kwargs": {"type": float, "help": "Override mapping confidence threshold"}, "config_path": "tasks.mapping.confidence_threshold"},
                 {"flags": ["--ambiguous-margin"], "kwargs": {"type": float, "help": "Override ambiguous mapping margin"}, "config_path": "tasks.mapping.ambiguous_margin"},
                 {"flags": ["--resolver-batch-size"], "kwargs": {"type": int, "help": "Override resolver agent batch size"}, "config_path": "tasks.mapping.resolver_batch_size"}
             ],
-            "agents": ["extraction", "embedding", "resolution"]
+            "agents": ["extraction", "embedding", "general_resolution", "lexical_resolution", "semantic_resolution"]
         }
     }

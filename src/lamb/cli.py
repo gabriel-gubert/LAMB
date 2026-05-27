@@ -1,4 +1,5 @@
 import argparse
+import json
 import sys
 from .config_manager import ConfigManager
 from .config_schema import ConfigSchema
@@ -21,7 +22,7 @@ def _get_dest_from_flags(flags, kwargs):
 def apply_cli_overrides(args: argparse.Namespace, cm: ConfigManager, command: str):
     """
     Dynamically routes parsed arguments to their exact ConfigManager dot-paths
-    using the CLI_SCHEMA single source of truth.
+    using the ConfigSchema single source of truth.
     """
 
     # 1. Apply Global Flags
@@ -141,7 +142,7 @@ def handle_map(args, cm: ConfigManager):
     if args.output:
         try:
             with open(args.output, "w", encoding="utf-8") as f:
-                f.write(result)
+                json.dump(result, f, indent=4)
 
             print(f"Full mapping table successfully saved to: {args.output}")
         except Exception as e:
@@ -193,7 +194,7 @@ def main():
 
     # --- Parse & Execute ---
     args = parser.parse_args()
-    
+
     if not args.command:
         parser.print_help()
         sys.exit(1)
