@@ -24,7 +24,7 @@ class RegistryManager:
         registry[alias] = str(target_path)
 
         with open(self.registry_file, 'w') as f:
-            json.dump(registry, f)
+            json.dump(registry, f, indent=4)
 
         return target_path
 

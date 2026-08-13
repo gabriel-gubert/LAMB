@@ -9,21 +9,29 @@ authors = [
     {name = "Gabriel Vitor Klaumann Gubert", email = "Gabriel.KlaumannGubert@thi.de"},
 ]
 dependencies = [
-    "jupyter-ai",
-    "jupyter-ai-magics",
-    "toml",
     "langchain",
+    "langchain_community",
     "langchain_openai",
+    "langchain-text-splitters",
     "langgraph",
+    "langgraph-checkpoint-sqlite",
+    "litellm[proxy]",
+    "markdownify",
     "numpy",
+    "pydantic",
+    "rich",
+    "tiktoken",
+    "toml",
+    "tree-sitter",
+    "tree-sitter-html",
     "tree_sitter_language_pack"
 ]
 
 [project.scripts]
 lamb = "lamb.cli:main"
 
-[project.entry-points."jupyter_ai.model_providers"]
-lamb = "lamb.jupyter.providers:LambProvider"
-
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+lamb = ["languages.yaml"]

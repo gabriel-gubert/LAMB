@@ -40,6 +40,16 @@ class ConfigManager:
 
         current[keys[-1]] = value
 
+    def _deep_merge(self, base: dict, local: dict) -> dict:
+        """Recursively merges local dict into base dict."""
+
+        for key, value in local.items():
+            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                self._deep_merge(base[key], value)
+            else:
+                base[key] = value
+        return base
+
     def _load_cascaded_config(self) -> dict:
         """Merges global and local configs (local takes precedence)."""
 
@@ -52,12 +62,7 @@ class ConfigManager:
         # Load Local (./.lambconfig.toml)
         if self.local_path.exists():
             local_cfg = toml.load(self.local_path)
-
-            for section, values in local_cfg.items():
-                if section in combined and isinstance(values, dict):
-                    combined[section].update(values)
-                else:
-                    combined[section] = values
+            combined = self._deep_merge(combined, local_cfg)
 
         return combined
 

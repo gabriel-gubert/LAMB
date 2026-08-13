@@ -80,7 +80,9 @@ These settings control the application's verbosity and internal algorithm thresh
 | --- | --- | --- | --- | --- |
 | `general.verbose` | `--verbose` | Boolean | `None` | Enables detailed logging for prompt payloads and agent reasoning. |
 | `tasks.migration.summarization_threshold` | `--summarization-threshold` | Integer | `2048` | Max character length of legacy documentation before the summarizer agent is invoked. |
+| `tasks.mapping.multi_agent` | `--multi-agent` | Boolean | `True` | Whether or not to use multiple agent consensus. |
 | `tasks.mapping.confidence_threshold` | `--confidence-threshold` | Float | `0.92` | Minimum similarity score required to auto-map elements without the resolution agent. |
+| `tasks.mapping.confidence_floor` | `--confidence-floor` | Float | `0.65` | Minimum similarity score required not to discard an element as a potential mapping target. |
 | `tasks.mapping.ambiguous_margin` | `--ambiguous-margin` | Float | `0.05` | Score margin that triggers the resolution agent to decide between competing mappings. |
 | `tasks.mapping.resolver_batch_size` | `--resolver-batch-size` | Integer | `20` | Number of conflicts passed to the resolution agent in a single LLM prompt. |
 
