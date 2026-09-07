@@ -10,6 +10,19 @@ from rich.text import Text
 
 import numpy as np
 
+
+def log_info(message: str):
+    print(f"[*] {message}", file=sys.stderr)
+
+
+def log_warn(message: str):
+    print(f"[/!\\] {message}", file=sys.stderr)
+
+
+def log_error(message: str):
+    print(f"[X] {message}", file=sys.stderr)
+
+
 def print_agent_state(state: dict, title: str = "Mapper Agent State", n: int = 5):
     """
     Prints the LangGraph state to the CLI with formatting and colors.
@@ -20,29 +33,24 @@ def print_agent_state(state: dict, title: str = "Mapper Agent State", n: int = 5
 
     console = Console()
 
-    # --- Recursive Helper Function ---
+
     def truncate_recursive(item):
         if isinstance(item, dict):
-            # Recursively process all dictionary values
             return {k: truncate_recursive(v) for k, v in item.items()}
         
         elif isinstance(item, list):
-            # If the list is larger than the boundaries, truncate the middle
             if len(item) > 2 * n:
                 truncated_list = []
-                # Add first n elements (recursively processed)
+
                 for x in item[:n]:
                     truncated_list.append(truncate_recursive(x))
-                
-                # Add placeholder indicating the number of hidden elements
+
                 truncated_list.append(f"... ({len(item) - 2 * n} ELEMENTS HIDDEN) ...")
-                
-                # Add last n elements (recursively processed)
+
                 for x in item[-n:]:
                     truncated_list.append(truncate_recursive(x))
                 return truncated_list
             else:
-                # List is short enough, but still process elements recursively
                 return [truncate_recursive(x) for x in item]
         
         return item
@@ -51,11 +59,15 @@ def print_agent_state(state: dict, title: str = "Mapper Agent State", n: int = 5
     if len(state) > 2 * n:
         state_list = list(state.items())
         truncated_state = {}
+
         for k, v in state_list[:n]:
             truncated_state[k] = v
+
         truncated_state["... (truncated)"] = f"{len(state) - 2 * n} elements hidden"
+
         for k, v in state_list[-n:]:
             truncated_state[k] = v
+
         state_to_print = truncated_state
     else:
         state_to_print = state
@@ -76,6 +88,7 @@ def print_agent_state(state: dict, title: str = "Mapper Agent State", n: int = 5
 
     console.print(panel)
 
+
 def display_rich_matrix(sim_matrix, v1_elements, v2_elements, n: int = 5, title="Semantic Similarity Matrix"):
     """
     Displays the similarity matrix using a grayscale heatmap for cell values
@@ -83,22 +96,21 @@ def display_rich_matrix(sim_matrix, v1_elements, v2_elements, n: int = 5, title=
     If the matrix is too big, it truncates it to show only the first N
     elements and the last N elements.
     """
+
     console = Console()
     brand_blue = "#005A9B"
 
     # --- MIN-MAX MATRIX NORMALIZATION BLOCK ---
-    # Captures any matrix configuration (raw or pure Z-score) and maps it cleanly
     matrix_min = float(np.min(sim_matrix))
     matrix_max = float(np.max(sim_matrix))
     matrix_range = matrix_max - matrix_min
-    
-    # Avoid zero division if every cell inside the matrix holds the exact same score
+
     if matrix_range == 0:
         matrix_range = 1e-6
     # ------------------------------------------
 
-    # Determine column truncation
     col_truncated = len(v2_elements) > 2 * n
+
     if col_truncated:
         v2_cols = list(v2_elements[:n]) + [{"member": "..."}] + list(v2_elements[-n:])
         col_indices = list(range(n)) + [None] + list(range(len(v2_elements) - n, len(v2_elements)))
@@ -115,21 +127,25 @@ def display_rich_matrix(sim_matrix, v1_elements, v2_elements, n: int = 5, title=
     )
 
     table.add_column("Legacy / Modern", style=f"bold {brand_blue}", no_wrap=True)
+
     for el in v2_cols:
         table.add_column((el.get('member') or el.get('class_or_interface') or el.get('namespace') or "")[:8], justify="center")
 
-    # Determine row truncation
     row_truncated = len(v1_elements) > 2 * n
+
     if row_truncated:
         row_indices = list(range(n)) + [None] + list(range(len(v1_elements) - n, len(v1_elements)))
     else:
         row_indices = list(range(len(v1_elements)))
 
     is_first_row = True
+
     for r_idx in row_indices:
         if r_idx is None:
             table.add_row("...")
+
             is_first_row = False
+
             continue
 
         v1_name = (v1_elements[r_idx].get('member') or v1_elements[r_idx].get('class_or_interface') or v1_elements[r_idx].get('namespace') or "")[:15]
@@ -138,23 +154,22 @@ def display_rich_matrix(sim_matrix, v1_elements, v2_elements, n: int = 5, title=
         for c_idx in col_indices:
             if c_idx is None:
                 row_data.append(Text("...", justify="center") if is_first_row else Text(""))
+
                 continue
                 
             score = sim_matrix[r_idx][c_idx]
-            
-            # Linearly scale the score to an exact 0.0 - 1.0 normalization window
             normalized_score = (score - matrix_min) / matrix_range
-            
-            # Compute v and apply clip guardrails to ensure it sits safely inside [0, 255]
             v = int(np.clip(normalized_score * 255, 0, 255))
-            
             cell_text = Text(f"{score:.2f}", style=f"black on rgb({v},{v},{v})")
+
             row_data.append(cell_text)
 
         table.add_row(*row_data)
+
         is_first_row = False
 
     console.print(table)
+
 
 def display_mapping_table(mappings: list[dict], n: int = 5):
     """
@@ -172,6 +187,7 @@ def display_mapping_table(mappings: list[dict], n: int = 5):
         return
 
     header_style = "bold #00599C"
+
     table = Table(
         title="API Migration Mapping Table",
         title_style=header_style,
@@ -202,6 +218,7 @@ def display_mapping_table(mappings: list[dict], n: int = 5):
     for row in mappings_to_show:
         if row is None:
             table.add_row("...")
+
             continue
 
         v1_namespace = f"[dim]{row.get('old_namespace', 'N/A')}[/dim]"
@@ -227,6 +244,7 @@ def display_mapping_table(mappings: list[dict], n: int = 5):
         table.add_row(v1_display, v2_display, complexity_text, notes_text)
 
     console.print(table)
+
 
 def print_migration_report(confidence_report: Dict[str, Any], audit_trail: Dict[str, Any], verbose: bool = False) -> None:
         """
@@ -279,6 +297,7 @@ def print_migration_report(confidence_report: Dict[str, Any], audit_trail: Dict[
 
                     print(f"  Coverage Ratio : {cov:.1f}%", file=sys.stderr)
                     print(f"  Logprob Mass   : {logprob_mass:.1f}% ({tokens} tokens)", file=sys.stderr)
+
                     if matched:
                         print(f"  Matched Targets: {', '.join(matched)}", file=sys.stderr)
                     if leftover:

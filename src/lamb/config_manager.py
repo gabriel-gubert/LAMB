@@ -9,6 +9,7 @@ class ConfigManager:
     Local:  ./lambconfig.toml
     """
 
+
     def __init__(self):
         self.global_path = Path.home() / ".lamb" / "config.toml"
         self.local_path = Path(".lambconfig.toml")
@@ -40,6 +41,7 @@ class ConfigManager:
 
         current[keys[-1]] = value
 
+
     def _deep_merge(self, base: dict, local: dict) -> dict:
         """Recursively merges local dict into base dict."""
 
@@ -48,7 +50,9 @@ class ConfigManager:
                 self._deep_merge(base[key], value)
             else:
                 base[key] = value
+
         return base
+
 
     def _load_cascaded_config(self) -> dict:
         """Merges global and local configs (local takes precedence)."""
@@ -66,6 +70,7 @@ class ConfigManager:
 
         return combined
 
+
     def get(self, key_path: str, default: Any = None) -> Any:
         """
         Get a value using dot notation (e.g., 'tasks.default.model').
@@ -81,6 +86,7 @@ class ConfigManager:
             return val
         except (KeyError, TypeError):
             return default
+
 
     def set(self, key_path: str, value: Any, scope: str = "local"):
         """
@@ -104,6 +110,7 @@ class ConfigManager:
             toml.dump(cfg, f)
 
         self.config = self._load_cascaded_config()
+
 
     def list(self):
         """Returns the entire configuration as a flat list of key-value pairs."""

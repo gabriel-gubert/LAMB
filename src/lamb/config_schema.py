@@ -75,7 +75,8 @@ class ConfigSchema:
                 {"flags": ["--resolver-batch-size"], "kwargs": {"type": int, "default": 20, "help": "Override Resolver Agent Batch Size."}, "config_path": "tasks.mapping.resolver_batch_size"},
                 {"flags": ["--discovery-batch-size"], "kwargs": {"type": int, "default": 20, "help": "Override the Discovery Agent Batch Size."}, "config_path": "tasks.mapping.discovery_batch_size"},
                 {"flags": ["--stage-output-dir"], "kwargs": {"help": "Override Stage Output Directory."}, "config_path": "tasks.mapping.stage_output_dir"},
-                {"flags": ["--checkpoint-database-path"], "kwargs": {"help": "Override the Path to the SQLite 3 Database File to use for LangGraph's Checkpoints. Defaults to \"~/.lamb/map_checkpoint.db\"."}, "config_path": "tasks.mapping.checkpoint_database_path"}
+                {"flags": ["--checkpoint-database-path"], "kwargs": {"help": "Override the Path to the SQLite 3 Database File to use for LangGraph's Checkpoints. Defaults to \"~/.lamb/map_checkpoint.db\"."}, "config_path": "tasks.mapping.checkpoint_database_path"},
+                {"flags": ["--tmp-dir"], "kwargs": {"help": "Override the Path to the TEMP File Directory. Defaults to \"~/.lamb/tmp\"."}, "config_path": "tasks.mapping.tmp_dir"}
             ],
             "agents": [
                 "tasks.mapping.extraction",

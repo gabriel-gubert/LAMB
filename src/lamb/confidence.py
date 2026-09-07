@@ -1,85 +1,20 @@
 import math
-import sys
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import List, Set, Optional, Union, Dict, Any, Tuple
 
-from .smart_parser import ASTSyntaxError, ASTRange
-from .output_templates import AppliedRuleMapping
-
-
-# =========================================================================
-# ENUMS & REPORT DATACLASSES
-# =========================================================================
-
-class ConfidenceLevel(str, Enum):
-    HIGH = "HIGH"
-    MEDIUM = "MEDIUM"
-    LOW = "LOW"
-    ZERO = "ZERO (Syntax Errors Detected / Divergence)"
-
-
-class EvaluationStatus(str, Enum):
-    AUTO_APPROVED = "AUTO-APPROVED"
-    NEEDS_MANUAL_REVIEW = "NEEDS MANUAL REVIEW"
-    FLAGGED = "FLAGGED"
-    REJECTED = "REJECTED"
-
-
-@dataclass
-class TokenLogprob:
-    """Represents a token's log probability alongside its byte offsets in generated code."""
-    token: str
-    logprob: float
-    start_byte: int
-    end_byte: int
-
-
-@dataclass
-class SnippetDiagnostics:
-    leftover_legacy_symbols: List[str] = field(default_factory=list)
-    matched_target_symbols: List[str] = field(default_factory=list)
-    schema_coverage_ratio: float = 0.0
-    snippet_logprob_mass: float = 0.80
-    tokens_in_snippet: int = 0
-
-
-@dataclass
-class RuleConfidenceScore:
-    rule_id: int
-    operation: str
-    range: ASTRange
-    score: float
-    level: ConfidenceLevel
-    status: EvaluationStatus
-    input_snippet: str
-    output_snippet: str
-    diagnostics: SnippetDiagnostics
-
-
-@dataclass
-class GlobalDiagnostics:
-    attempts_taken: int
-    retry_penalty_factor: float
-    total_rules_applied: int
-    total_syntax_errors: int
-    syntax_errors: List[ASTSyntaxError] = field(default_factory=list)
-    leftover_legacy_symbols: List[str] = field(default_factory=list)
-    matched_target_symbols: List[str] = field(default_factory=list)
-
-
-@dataclass
-class GlobalConfidenceReport:
-    score: float
-    level: ConfidenceLevel
-    status: EvaluationStatus
-    rule_scores: List[RuleConfidenceScore] = field(default_factory=list)
-    diagnostics: Optional[GlobalDiagnostics] = None
-
-
-# =========================================================================
-# EVALUATOR CLASS
-# =========================================================================
+from .logger import log_info, log_warn, log_error
+from .types import (
+    Complexity,
+    ASTSyntaxError,
+    ASTRange,
+    EvaluationStatus,
+    RuleConfidenceScore,
+    ConfidenceLevel,
+    GlobalConfidenceReport,
+    GlobalDiagnostics,
+    SnippetDiagnostics,
+    TokenLogprob
+)
 
 class DynamicConfidenceEvaluator:
     """
@@ -91,6 +26,7 @@ class DynamicConfidenceEvaluator:
     def _dempster_combine(m1: float, m2: float) -> float:
         return m1 + m2 - (m1 * m2)
 
+
     @classmethod
     def _calculate_snippet_logprob_mass(
         cls, 
@@ -101,6 +37,7 @@ class DynamicConfidenceEvaluator:
         Filters tokens that fall within the byte span of the rule's output snippet 
         and calculates snippet-specific logprob evidence mass using geometric mean.
         """
+
         if not token_logprobs:
             return 0.75, 0
 
@@ -113,12 +50,14 @@ class DynamicConfidenceEvaluator:
             return 0.75, 0
 
         geom_mean_prob = math.exp(sum(snippet_tokens) / len(snippet_tokens))
+
         return round(geom_mean_prob * 0.85, 3), len(snippet_tokens)
+
 
     @staticmethod
     def _ranges_overlap(r1: ASTRange, r2: ASTRange) -> bool:
-        """Checks whether two byte ranges overlap."""
         return not (r1.end_byte <= r2.start_byte or r1.start_byte >= r2.end_byte)
+
 
     @staticmethod
     def _locate_snippet_exact_range(migrated_code: str, snippet: str) -> Optional[ASTRange]:
@@ -126,7 +65,9 @@ class DynamicConfidenceEvaluator:
         Locates the exact byte, line, and column range of a snippet within migrated_code.
         Returns None if snippet does not exist in migrated_code (Divergence).
         """
+
         snippet_clean = snippet.strip()
+
         if not snippet_clean or snippet_clean not in migrated_code:
             return None
 
@@ -145,6 +86,7 @@ class DynamicConfidenceEvaluator:
 
         end_line = start_line + snippet_clean.count('\n')
         snip_last_nl = snippet_clean.rfind('\n')
+
         if snip_last_nl != -1:
             end_column = len(snippet_clean) - (snip_last_nl + 1)
         else:
@@ -159,10 +101,11 @@ class DynamicConfidenceEvaluator:
             end_byte=end_byte
         )
 
+
     @classmethod
     def score_single_rule(
         cls,
-        rule_mapping: AppliedRuleMapping,
+        rule_mapping: dict,
         migrated_code: str,
         all_syntax_errors: List[ASTSyntaxError],
         old_symbols: Set[str],
@@ -172,32 +115,64 @@ class DynamicConfidenceEvaluator:
         verbose: bool = True
     ) -> RuleConfidenceScore:
         """
-        Evaluates an individual AppliedRuleMapping snippet directly against migrated_code.
+        Evaluates an individual applied rule snippet directly against migrated_code.
         """
-        # 1. Exact string assertion inside migrated_code
-        snippet_range = cls._locate_snippet_exact_range(migrated_code, rule_mapping.output_snippet)
+
+        rule_complexity = rule_mapping["applied_rule"].complexity
+        is_deprecated = (
+            rule_complexity == Complexity.DEPRECATED or 
+            str(getattr(rule_complexity, "value", rule_complexity)).upper() == "DEPRECATED"
+        )
+
+        if not rule_mapping["output_snippet"] and is_deprecated:
+            dep_range = ASTRange(
+                start_line=1, start_column=0, end_line=1, end_column=0,
+                start_byte=0, end_byte=0
+            )
+            dep_score = round(1.0 * retry_decay, 3)
+            
+            return RuleConfidenceScore(
+                rule_id=rule_mapping["applied_rule"].rule_id,
+                description=rule_mapping["applied_rule"].serialize() if hasattr(rule_mapping["applied_rule"], "serialize") and callable(rule_mapping["applied_rule"].serialize) else "",
+                operations=", ".join(rule_mapping["operations"]),
+                range=dep_range,
+                score=dep_score,
+                level=ConfidenceLevel.HIGH if dep_score >= 0.85 else ConfidenceLevel.MEDIUM,
+                status=EvaluationStatus.AUTO_APPROVED if dep_score >= 0.85 else EvaluationStatus.NEEDS_MANUAL_REVIEW,
+                reason="",
+                input_snippet=rule_mapping["input_snippet"],
+                output_snippet="",
+                diagnostics=SnippetDiagnostics(
+                    leftover_legacy_symbols=[],
+                    matched_target_symbols=[],
+                    schema_coverage_ratio=1.0,
+                    snippet_logprob_mass=1.0,
+                    tokens_in_snippet=0
+                )
+            )
+
+        snippet_range = cls._locate_snippet_exact_range(migrated_code, rule_mapping["output_snippet"])
 
         if not snippet_range:
             if verbose:
-                print(
-                    f"[/!\\] Divergence Detected For Rule ID {rule_mapping.rule_id}: "
-                    f"Output Snippet '{rule_mapping.output_snippet[:40]}...' Not Found In Migrated Code.",
-                    file=sys.stderr
-                )
+                log_info(f"Divergence for Rule #{rule_mapping["applied_rule"].rule_id}: Source Code Snippet `{rule_mapping["output_snippet"][:40]}...` Not Found in Migrated Code.")
             
             fallback_range = ASTRange(
                 start_line=1, start_column=0, end_line=1, end_column=1,
                 start_byte=0, end_byte=1
             )
+
             return RuleConfidenceScore(
-                rule_id=rule_mapping.rule_id,
-                operation="DIVERGENCE_ERROR",
+                rule_id=rule_mapping["applied_rule"].rule_id,
+                description=rule_mapping["applied_rule"].serialize() if hasattr(rule_mapping["applied_rule"], "serialize") and callable(rule_mapping["applied_rule"].serialize) else "",
+                operations=", ".join(rule_mapping["operations"]),
                 range=fallback_range,
                 score=0.0,
                 level=ConfidenceLevel.ZERO,
                 status=EvaluationStatus.REJECTED,
-                input_snippet=rule_mapping.input_snippet,
-                output_snippet=rule_mapping.output_snippet,
+                reason="SOURCE CODE SNIPPET NOT FOUND",
+                input_snippet=rule_mapping["input_snippet"],
+                output_snippet=rule_mapping["output_snippet"],
                 diagnostics=SnippetDiagnostics(
                     leftover_legacy_symbols=[],
                     matched_target_symbols=[],
@@ -207,35 +182,8 @@ class DynamicConfidenceEvaluator:
                 )
             )
 
-        # 2. Check for intersecting syntax errors
-        rule_syntax_errors = [
-            err for err in all_syntax_errors
-            if cls._ranges_overlap(err.range, snippet_range)
-        ]
-
-        if rule_syntax_errors:
-            err_msg = rule_syntax_errors[0].message
-            return RuleConfidenceScore(
-                rule_id=rule_mapping.rule_id,
-                operation="SYNTAX_ERROR",
-                range=snippet_range,
-                score=0.0,
-                level=ConfidenceLevel.ZERO,
-                status=EvaluationStatus.REJECTED,
-                input_snippet=rule_mapping.input_snippet,
-                output_snippet=rule_mapping.output_snippet,
-                diagnostics=SnippetDiagnostics(
-                    leftover_legacy_symbols=[],
-                    matched_target_symbols=[],
-                    schema_coverage_ratio=0.0,
-                    snippet_logprob_mass=0.0,
-                    tokens_in_snippet=0
-                )
-            )
-
-        # 3. Compliance Check: Inspect symbols in input and output snippets
-        out_tokens = set(rule_mapping.output_snippet.replace("(", " ").replace(")", " ").replace(".", " ").split())
-        in_tokens = set(rule_mapping.input_snippet.replace("(", " ").replace(")", " ").replace(".", " ").split())
+        out_tokens = set(rule_mapping["output_snippet"].replace("(", " ").replace(")", " ").replace(".", " ").split())
+        in_tokens = set(rule_mapping["input_snippet"].replace("(", " ").replace(")", " ").replace(".", " ").split())
 
         leftover_legacy = in_tokens.intersection(old_symbols).intersection(out_tokens)
         matched_targets = out_tokens.intersection(new_symbols)
@@ -271,15 +219,49 @@ class DynamicConfidenceEvaluator:
             level = ConfidenceLevel.LOW
             status = EvaluationStatus.FLAGGED
 
+        syntax_errors = [
+            err for err in all_syntax_errors
+            if cls._ranges_overlap(err.range, snippet_range)
+        ]
+
+        if syntax_errors:
+            error_messages = "\n".join([syntax_error.message for syntax_error in syntax_errors])
+
+            if verbose:
+                log_info(f"Syntax Error(s) in Rule #{rule_mapping["applied_rule"].rule_id} at {snippet_range}:\n\n{error_messages}\n\n")
+
+            return RuleConfidenceScore(
+                rule_id=rule_mapping["applied_rule"].rule_id,
+                description=rule_mapping["applied_rule"].serialize() if hasattr(rule_mapping["applied_rule"], "serialize") and callable(rule_mapping["applied_rule"].serialize) else "",
+                operations=", ".join(rule_mapping["operations"]),
+                range=snippet_range,
+                score=0.0,
+                level=ConfidenceLevel.ZERO,
+                status=EvaluationStatus.REJECTED,
+                reason="1 OR MORE SYNTAX ERROR(S)",
+                input_snippet=rule_mapping["input_snippet"],
+                output_snippet=rule_mapping["output_snippet"],
+                diagnostics=SnippetDiagnostics(
+                    syntax_errors=syntax_errors,
+                    leftover_legacy_symbols=list(leftover_legacy),
+                    matched_target_symbols=list(matched_targets),
+                    schema_coverage_ratio=round(target_ratio, 3),
+                    snippet_logprob_mass=m2_logprob,
+                    tokens_in_snippet=token_count
+                )
+            )
+
         return RuleConfidenceScore(
-            rule_id=rule_mapping.rule_id,
-            operation="RULE_APPLIED",
+            rule_id=rule_mapping["applied_rule"].rule_id,
+            description=rule_mapping["applied_rule"].serialize() if hasattr(rule_mapping["applied_rule"], "serialize") and callable(rule_mapping["applied_rule"].serialize) else "",
+            operations=", ".join(rule_mapping["operations"]),
             range=snippet_range,
             score=final_score,
             level=level,
             status=status,
-            input_snippet=rule_mapping.input_snippet,
-            output_snippet=rule_mapping.output_snippet,
+            reason="",
+            input_snippet=rule_mapping["input_snippet"],
+            output_snippet=rule_mapping["output_snippet"],
             diagnostics=SnippetDiagnostics(
                 leftover_legacy_symbols=list(leftover_legacy),
                 matched_target_symbols=list(matched_targets),
@@ -289,10 +271,11 @@ class DynamicConfidenceEvaluator:
             )
         )
 
+
     @classmethod
     def evaluate_migration_rules(
         cls,
-        applied_rules: List[AppliedRuleMapping],
+        applied_rules: List[dict],
         migrated_code: str,
         all_syntax_errors: List[ASTSyntaxError],
         mapping_table: List[Union[Dict[str, Any], Any]],
@@ -303,46 +286,7 @@ class DynamicConfidenceEvaluator:
         """
         Evaluates confidence scores strictly for applied rule snippets and overall code syntax.
         """
-        # GATE 1: Global syntax error rejection
-        if all_syntax_errors:
-            error_rule_scores = [
-                RuleConfidenceScore(
-                    rule_id=err.error_id,
-                    operation="SYNTAX_ERROR",
-                    range=err.range,
-                    score=0.0,
-                    level=ConfidenceLevel.ZERO,
-                    status=EvaluationStatus.REJECTED,
-                    input_snippet="[SYNTAX ERROR]",
-                    output_snippet=err.node_text,
-                    diagnostics=SnippetDiagnostics(
-                        leftover_legacy_symbols=[],
-                        matched_target_symbols=[],
-                        schema_coverage_ratio=0.0,
-                        snippet_logprob_mass=0.0,
-                        tokens_in_snippet=0
-                    )
-                )
-                for err in all_syntax_errors
-            ]
 
-            return GlobalConfidenceReport(
-                score=0.0,
-                level=ConfidenceLevel.ZERO,
-                status=EvaluationStatus.REJECTED,
-                rule_scores=error_rule_scores,
-                diagnostics=GlobalDiagnostics(
-                    attempts_taken=attempts_taken,
-                    retry_penalty_factor=round(max(0.60, 1.0 - ((attempts_taken - 1) * 0.10)), 2),
-                    total_rules_applied=len(applied_rules),
-                    total_syntax_errors=len(all_syntax_errors),
-                    syntax_errors=all_syntax_errors,
-                    leftover_legacy_symbols=[],
-                    matched_target_symbols=[]
-                )
-            )
-
-        # Extract symbols from mapping table
         old_symbols: Set[str] = set()
         new_symbols: Set[str] = set()
 
@@ -395,13 +339,19 @@ class DynamicConfidenceEvaluator:
             all_leftover_legacy.update(r_score.diagnostics.leftover_legacy_symbols)
             all_matched_targets.update(r_score.diagnostics.matched_target_symbols)
 
-        if not rule_scores:
+        reason = ""
+
+        if all_syntax_errors:
+            global_score = 0.0
+            reason += "1 OR MORE SYNTAX ERROR(S) FOUND."
+        elif not rule_scores:
             global_score = 1.0
         else:
             avg_score = sum(r.score for r in rule_scores) / len(rule_scores)
 
             if all_leftover_legacy:
                 global_ceiling = max(0.10, 0.40 - (len(all_leftover_legacy) * 0.15))
+                reason += "1 OR MORE LEFTOVER LEGACY SYMBOLS REMAIN."
             else:
                 global_ceiling = 1.0
 
@@ -423,13 +373,14 @@ class DynamicConfidenceEvaluator:
             score=global_score,
             level=global_level,
             status=global_status,
+            reason=reason,
             rule_scores=rule_scores,
             diagnostics=GlobalDiagnostics(
                 attempts_taken=attempts_taken,
                 retry_penalty_factor=round(retry_decay, 2),
                 total_rules_applied=len(rule_scores),
-                total_syntax_errors=0,
-                syntax_errors=[],
+                total_syntax_errors=len(all_syntax_errors),
+                syntax_errors=all_syntax_errors,
                 leftover_legacy_symbols=list(all_leftover_legacy),
                 matched_target_symbols=list(all_matched_targets)
             )

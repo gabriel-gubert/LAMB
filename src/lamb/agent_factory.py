@@ -1,8 +1,8 @@
 from typing import TypeVar, Type
 
-from .migrator_agent import MigratorAgent
-from .mapper_agent import MapperAgent
 from .config_manager import ConfigManager
+from .mapper_agent import MapperAgent
+from .migrator_agent import MigratorAgent
 from .rate_limited_chat import RateLimitedChatOpenAI, RateLimitedOpenAIEmbeddings
 
 T = TypeVar('T') 
@@ -22,46 +22,45 @@ def create_openai_component(
     settings = {}
 
     general_cfg = config_manager.get("general")
+
     if isinstance(general_cfg, dict):
         for k, v in general_cfg.items():
             if k != "verbose" and v is not None:
                 settings[k] = v
 
     default_cfg = config_manager.get("tasks.default")
+
     if isinstance(default_cfg, dict):
         for k, v in default_cfg.items():
             if v is not None:
                 settings[k] = v
 
     task_cfg = config_manager.get(f"tasks.{task_key}")
+
     if isinstance(task_cfg, dict):
         for k, v in task_cfg.items():
             if v is not None:
                 settings[k] = v
 
-    # Apply explicit overrides if provided (e.g. enforcing logprobs)
     if override_kwargs:
         settings.update(override_kwargs)
 
-    # 1. Check per-agent LiteLLM preference
     use_litellm = settings.pop("use_litellm", True)
 
-    # 2. Configure endpoint routing based on precedence
     if use_litellm:
         litellm_host = config_manager.get("general.litellm.host", "127.0.0.1")
         litellm_port = config_manager.get("general.litellm.port", 4000)
-        
-        # LiteLLM takes precedence: override base_url to point to proxy
+
         settings["base_url"] = f"http://{litellm_host}:{litellm_port}/v1"
+
         if not settings.get("api_key"):
             settings["api_key"] = "sk-litellm-local-proxy"
     else:
-        # Fallback dummy key for local endpoints (vLLM, custom base_urls) if no key is provided
         if settings.get("base_url") and not settings.get("api_key"):
             settings["api_key"] = "vllm-local-endpoint"
 
-    # 3. Dynamic Kwargs Validation for Pydantic
     valid_keys = set()
+
     try:
         for name, field in component_class.model_fields.items():
             valid_keys.add(name)
@@ -91,7 +90,6 @@ def create_openai_component(
         if v is not None and k in valid_keys
     }
 
-    # Pass model_kwargs if extra model settings like logprobs need to be forwarded
     if "model_kwargs" in settings and "model_kwargs" in valid_keys:
         kwargs["model_kwargs"] = settings["model_kwargs"]
 
@@ -104,7 +102,7 @@ def migrator_agent(config_manager: ConfigManager) -> MigratorAgent:
     Enforces logprobs=True for the migrator component.
     """
 
-    migrator_component = create_openai_component(
+    migrator = create_openai_component(
         RateLimitedChatOpenAI,
         config_manager,
         "migration.migration",
@@ -114,7 +112,7 @@ def migrator_agent(config_manager: ConfigManager) -> MigratorAgent:
     )
 
     return MigratorAgent(
-        migrator=migrator_component,
+        migrator=migrator,
         summarizer=create_openai_component(RateLimitedChatOpenAI, config_manager, "migration.summarization"),
         detector=create_openai_component(RateLimitedChatOpenAI, config_manager, "migration.detection"),
         analyzer=create_openai_component(RateLimitedChatOpenAI, config_manager, "migration.analysis"),
@@ -153,5 +151,6 @@ def mapper_agent(config_manager: ConfigManager) -> MapperAgent:
         resolver_batch_size=config_manager.get("tasks.mapping.resolver_batch_size", 20),
         stage_output_dir=config_manager.get("tasks.mapping.stage_output_dir", None),
         database_path=config_manager.get("tasks.mapping.checkpoint_database_path", "~/.lamb/map_checkpoint.db"),
+        tmp_dir=config_manager.get("tasks.mapping.tmp_dir", "~/.lamb/tmp"),
         verbose=config_manager.get("general.verbose", False)
     )

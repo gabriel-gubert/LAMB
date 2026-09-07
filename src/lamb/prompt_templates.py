@@ -1,6 +1,7 @@
 from typing import Any, Optional, List, Tuple
 from .types import Complexity
 
+
 def get_language_prompt(supported_langs: list[str] = None) -> str:
     """
     Generates a prompt containing the actual supported tree-sitter names.
@@ -72,6 +73,7 @@ int main() {{
 
 ### INPUT DATA
 """.strip()
+
 
 def get_parse_prompt() -> str:
     return f"""
@@ -411,6 +413,7 @@ void logAndQuery(Database::Core::QueryEngine& engine, const std::string& sql) {{
 ### INPUT DATA
 """.strip()
 
+
 def get_type_inference_prompt(mapping_table: Optional[List[Any]] = None) -> str:
     schema_str = f"\nMapping Table / Schema Context:\n{mapping_table}\n" if mapping_table else "\nMapping Table / Schema Context: None provided.\n"
 
@@ -583,6 +586,7 @@ function cleanup(store) {{
 ### INPUT DATA
 """.strip()
 
+
 def get_summarization_prompt() -> str:
     """Constructs the summarization prompt for API documentation."""
     return """
@@ -606,6 +610,7 @@ None.
 
 ### INPUT DATA
 """.strip()
+
 
 def get_migration_planner_prompt(
     language: str,
@@ -748,9 +753,13 @@ You are an expert Automated Code Transformation Engine for {language}. Your sole
 
 #### Plan Execution & Code Generation
 - **Strict Step Execution:** Follow the sequence outlined in the MIGRATION PLAN precisely. Do not skip steps, reorder operations, or introduce unplanned architectural shifts.
-- **Rule Tracking & Snippet Edge Cases:** For every migration rule applied, record its integer `rule_id`, the exact `input_snippet` from the legacy code, and the corresponding `output_snippet` produced in the migrated code.
-  - **Deprecations / Removals:** If a rule causes a legacy code snippet to be completely deleted or removed without a replacement, set `output_snippet` to an empty string `""`.
-  - **Additions / Injections:** If a rule requires inserting new code that has no direct equivalent in the legacy code snippet, set `input_snippet` to an empty string `""`.
+- **Rule Tracking & Snippet Edge Cases:** For every migration rule applied, record:
+  - `rule_id`: Integer rule identifier.
+  - `operations`: List of string literals representing the performed refactoring operation(s) (e.g., `["RENAME_METHOD"]`, `["CHANGE_SIGNATURE"]`, `["RENAME_CLASS", "MOVE_MODULE"]`, `["DEPRECATION_REMOVAL"]`).
+  - `input_snippet`: The exact snippet or line from the legacy code affected by this rule.
+  - `output_snippet`: The corresponding transformed snippet generated in the migrated code.
+  - **Deprecations / Removals:** If a rule causes a legacy code snippet to be completely deleted or removed without a replacement, set `output_snippet` to `""` and set `operations` to `["DEPRECATION_REMOVAL"]`.
+  - **Additions / Injections:** If a rule requires inserting new code that has no direct equivalent in the legacy code snippet, set `input_snippet` to `""`.
 - **Clean Code Standard:** Output ONLY clean, executable {language} code. Do NOT add inline code comments, block comments, or docstrings to the generated output unless specifically instructed in the plan.
 - **Syntax Integrity:** Ensure the final generated snippet is 100% syntactically valid, complete, and fully executable in {language}.
 
@@ -764,18 +773,22 @@ You are an expert Automated Code Transformation Engine for {language}. Your sole
 python
 
 ### MIGRATION RULES TO APPLY
+
 Rule ID: 1 | Cardinality: [1:1] | Target: `v1.net.Client` -> `connect_raw`
 - Target Destination: `v2.net.Client` -> `connect`
   - Signature: `connect_raw(host: str, port: int)` -> `connect(config: ConnectionConfig)`
 
 ### MIGRATION PLAN
+
 1. Refactor Client instantiation to V2 schema.
 2. Preserve Line 2 verbatim as requested by DONT_TOUCH constraints.
 
 ### DEVELOPER PRIORITY HIGHLIGHTS
+
 - [DONT_TOUCH / IMMUTABLE] Range `2:1-2:38`: `client.connect_raw("localhost", 8080)` (Must remain verbatim)
 
 ### LEGACY CODE SNIPPET TO MIGRATE
+
 ```python
 client = Client()
 client.connect_raw("localhost", 8080)
@@ -789,6 +802,7 @@ client.connect_raw("localhost", 8080)
   "applied_rules": [
     {{
       "rule_id": 1,
+      "operations": ["RENAME_CLASS", "RENAME_NAMESPACE"],
       "input_snippet": "client = Client()",
       "output_snippet": "client = v2.net.Client()"
     }}
@@ -804,22 +818,26 @@ client.connect_raw("localhost", 8080)
 python
 
 ### MIGRATION RULES TO APPLY
+
 Rule ID: 1 | Cardinality: [1:1] | Target: `v1.log.Logger` -> `info`
-- Target Destination: `v2.log.Logger` -> `info`
-  - Signature: `info(msg: str) -> None` -> `info(message: str) -> None`
+* Target Destination: `v2.log.Logger` -> `info`
+* Signature: `info(msg: str) -> None` -> `info(message: str) -> None`
 
 Rule ID: 2 | Cardinality: [1:1] | Target: `v1.config.Config` -> `get`
-- Target Destination: `v2.config.AppConfig` -> `get_setting`
-  - Signature: `get(key: str) -> Any` -> `get_setting(key_name: str) -> Any`
+* Target Destination: `v2.config.AppConfig` -> `get_setting`
+* Signature: `get(key: str) -> Any` -> `get_setting(key_name: str) -> Any`
 
 ### MIGRATION PLAN
+
 1. Refactor Logger instantiation and logging call to V2.
 2. Update Config access to use AppConfig.get_setting.
 
 ### DEVELOPER PRIORITY HIGHLIGHTS
+
 * [WARNING] Range `1:1-3:30`: Standard API migration
 
 ### LEGACY CODE SNIPPET TO MIGRATE
+
 ```python
 cfg = Config()
 logger = Logger()
@@ -834,11 +852,13 @@ logger.info(cfg.get("app_name"))
   "applied_rules": [
     {{
       "rule_id": 1,
+      "operations": ["RENAME_CLASS", "RENAME_NAMESPACE"],
       "input_snippet": "logger = Logger()\nlogger.info(cfg.get(\"app_name\"))",
       "output_snippet": "logger = v2.log.Logger()\nlogger.info(cfg.get_setting(\"app_name\"))"
     }},
     {{
       "rule_id": 2,
+      "operations": ["RENAME_CLASS", "RENAME_METHOD"],
       "input_snippet": "cfg = Config()\ncfg.get(\"app_name\")",
       "output_snippet": "cfg = v2.config.AppConfig()\ncfg.get_setting(\"app_name\")"
     }}
@@ -854,24 +874,28 @@ logger.info(cfg.get("app_name"))
 python
 
 ### MIGRATION RULES TO APPLY
+
 Rule ID: 1 | Cardinality: DEPRECATED | Target: `v1.cache.clear_legacy_cache`
-- Target Destination: DEPRECATED / REMOVED
-  - Additional Notes: Cache lifecycle is handled automatically in V2.
+* Target Destination: DEPRECATED / REMOVED
+* Additional Notes: Cache lifecycle is handled automatically in V2.
 
 Rule ID: 2 | Cardinality: [1:1] | Target: `v1.db.connect`
-- Target Destination: `v2.db.connect`
-  - Signature: `connect(uri: str)` -> `connect(uri: str, opts: ClientOptions)`
-  - Additional Notes: Must instantiate `opts = v2.db.ClientOptions()` prior to connection if not present.
+* Target Destination: `v2.db.connect`
+* Signature: `connect(uri: str)` -> `connect(uri: str, opts: ClientOptions)`
+* Additional Notes: Must instantiate `opts = v2.db.ClientOptions()` prior to connection if not present.
 
 ### MIGRATION PLAN
+
 1. Remove deprecated `clear_legacy_cache()` call.
 2. Inject required `opts = v2.db.ClientOptions()` configuration object.
 3. Update `connect()` call to pass the new `opts` instance.
 
 ### DEVELOPER PRIORITY HIGHLIGHTS
+
 * [WARNING] Range `1:1-3:25`: Deprecated call removal and signature update
 
 ### LEGACY CODE SNIPPET TO MIGRATE
+
 ```python
 clear_legacy_cache()
 db = connect("postgres://localhost:5432/db")
@@ -885,23 +909,27 @@ db = connect("postgres://localhost:5432/db")
   "applied_rules": [
     {{
       "rule_id": 1,
+      "operations": ["DEPRECATION_REMOVAL"],
       "input_snippet": "clear_legacy_cache()",
       "output_snippet": ""
     }},
     {{
       "rule_id": 2,
+      "operations": ["CHANGE_SIGNATURE", "RENAME_NAMESPACE"],
       "input_snippet": "db = connect(\"postgres://localhost:5432/db\")",
       "output_snippet": "opts = v2.db.ClientOptions()\ndb = v2.db.connect(\"postgres://localhost:5432/db\", opts)"
     }}
   ]
 }}
 ```
+
 """.strip()
 
     user_instructions_block = ""
     if user_comments.strip():
         user_instructions_block = f"""
 ### ADDITIONAL NOTES/INSTRUCTIONS
+
 {user_comments.strip()}
 """
 
@@ -909,6 +937,7 @@ db = connect("postgres://localhost:5432/db")
     if priority_summary.strip():
         priority_block = f"""
 ### DEVELOPER PRIORITY HIGHLIGHTS
+
 {priority_summary.strip()}
 """
 
@@ -916,6 +945,7 @@ db = connect("postgres://localhost:5432/db")
     if migration_plan.strip():
         plan_block = f"""
 ### MIGRATION PLAN
+
 {migration_plan.strip()}
 """
 
@@ -923,6 +953,7 @@ db = connect("postgres://localhost:5432/db")
     if validation_error.strip():
         error_retry_block = f"""
 ### PREVIOUS ATTEMPT SYNTAX / VALIDATION ERROR (FIX THIS)
+
 The previous migration attempt failed validation with the following error:
 "{validation_error.strip()}"
 Correct this error completely in the new generated code.
@@ -930,20 +961,28 @@ Correct this error completely in the new generated code.
 
     user_prompt = f"""
 ### TARGET LANGUAGE
+
 {language}
 
 ### MIGRATION RULES TO APPLY
+
 {formatted_rules}
+
 {plan_block}
+
 {priority_block}
 
 ### LEGACY CODE SNIPPET TO MIGRATE
+
 {legacy_code_snippet}
+
 {user_instructions_block}
+
 {error_retry_block}
 """.strip()
 
     return system_prompt, user_prompt
+
 
 def get_mapper_extraction_prompt():
     return """
@@ -1514,6 +1553,7 @@ You must return a list of objects in the format below:
 ### INPUT DATA
 """.strip()
 
+
 def get_lexical_mapper_resolution_prompt():
     return f"""
 ### ROLE & OBJECTIVE
@@ -1606,6 +1646,7 @@ You must return a list of objects in the format below:
 
 ### INPUT DATA
 """.strip()
+
 
 def get_semantic_mapper_resolution_prompt():
     return f"""
@@ -1713,6 +1754,7 @@ You must return a list of objects in the format below:
 
 ### INPUT DATA
 """.strip()
+
 
 def get_consensus_arbitration_prompt():
     return f"""

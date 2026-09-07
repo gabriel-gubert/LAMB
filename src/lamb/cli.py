@@ -12,11 +12,12 @@ import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
+from .agent_factory import migrator_agent, mapper_agent
 from .config_manager import ConfigManager
 from .config_schema import ConfigSchema
 from .registry_manager import RegistryManager
-from .agent_factory import migrator_agent, mapper_agent
-from .logger import print_migration_report
+from .logger import print_migration_report, log_info, log_warn, log_error
+
 
 def _set_pdeathsig():
     """Linux specific: send SIGTERM to child if parent process dies unexpectedly."""
@@ -54,7 +55,7 @@ def litellm_proxy_context(cm):
     verbose = cm.get("general.verbose", False)
 
     if host in ("0.0.0.0", "::"):
-        print("[/!\\] LiteLLM is binding to ALL Network Interfaces.", file=sys.stderr)
+        log_warn(f"LiteLLM is binding to ALL Network Interfaces.")
 
     cmd.extend(["--host", str(host), "--port", str(port)])
 
@@ -70,7 +71,7 @@ def litellm_proxy_context(cm):
 
     try:
         if verbose:
-            print(f"[*] Starting LiteLLM Proxy on http://{host}:{port}...", file=sys.stderr)
+            log_info(f"Starting LiteLLM Proxy on http://{host}:{port}...")
 
         stdout_dest = None if verbose else subprocess.DEVNULL
         stderr_dest = None if verbose else subprocess.DEVNULL
@@ -121,11 +122,10 @@ def litellm_proxy_context(cm):
                 raise RuntimeError(f"LiteLLM Proxy Process Exited Early with Code {exit_code}.")
 
         yield
-
     finally:
         if proxy_process and proxy_process.poll() is None:
             if verbose:
-                print("[*] Shutting down LiteLLM Proxy...", file=sys.stderr)
+                log_info(f"Shutting down LiteLLM Proxy...")
 
             proxy_process.terminate()
 
@@ -133,7 +133,7 @@ def litellm_proxy_context(cm):
                 proxy_process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 if verbose:
-                    print("[/!\\] LiteLLM Proxy DID NOT TERMINATA GRACEFULLY, sending SIGKILL...", file=sys.stderr)
+                    log_warn(f"LiteLLM Proxy DID NOT TERMINATA GRACEFULLY, sending SIGKILL...")
 
                 proxy_process.kill()
                 proxy_process.wait()
@@ -158,8 +158,6 @@ def parse_configuration_arg(val: str) -> dict:
 
 
 def _get_dest_from_flags(flags, kwargs):
-    """Helper to determine the attribute name argparse will use for a set of flags."""
-
     if "dest" in kwargs:
         return kwargs["dest"]
 
@@ -185,6 +183,7 @@ def apply_cli_overrides(args: argparse.Namespace, cm: ConfigManager, command: st
             cm.apply_override(item["config_path"], val)
 
     cmd_schema = ConfigSchema.COMMANDS.get(command)
+
     if not cmd_schema:
         return
 
@@ -198,6 +197,7 @@ def apply_cli_overrides(args: argparse.Namespace, cm: ConfigManager, command: st
 
     # 3. Apply Agent Configuration Overrides
     agents = cmd_schema.get("agents", [])
+
     for agent in agents:
         dest = f"configure_{agent.replace('-', '_')}"
         val = getattr(args, dest, None)
@@ -205,23 +205,25 @@ def apply_cli_overrides(args: argparse.Namespace, cm: ConfigManager, command: st
         if val is not None:
             try:
                 overrides = parse_configuration_arg(val)
+
                 if isinstance(overrides, dict):
                     for k, v in overrides.items():
                         cm.apply_override(f"{agent}.{k}", v)
                 else:
-                    print(f"[X] Configuration for Agent '{agent.split('.')[-1].title()}' must be a JSON Object/Dictionary.", file=sys.stderr)
+                    log_error(f"Configuration for Agent '{agent.split('.')[-1].title()}' must be a JSON Object/Dictionary.")
+
                     sys.exit(1)
             except Exception as e:
-                print(f"[X] Failed to Parse Configuration for Agent '{agent.split('.')[-1].title()}': {e}.", file=sys.stderr)
+                log_error(f"Failed to Parse Configuration for Agent '{agent.split('.')[-1].title()}': {e}.")
+
                 sys.exit(1)
 
 
 def handle_config(args, cm: ConfigManager):
-    """Handles logic for the 'config' subcommand."""
-
     if args.list:
         for item in cm.list():
             print(item)
+
         return
 
     if args.key and args.value:
@@ -242,11 +244,14 @@ def handle_config(args, cm: ConfigManager):
                     pass
 
         cm.set(args.key, args.value, scope=scope)
-        print(f"Set {args.key} to {args.value} in {scope.capitalize()} Configuration File.")
+
+        log_info(f"Set {args.key} to {args.value} in {scope.capitalize()} Configuration File.")
     elif args.key:
         val = cm.get(args.key)
+
         if val is not None:
             print(val)
+
 
 def _parse_range_flag(range_str: str, file_content: str) -> str:
     """
@@ -266,51 +271,48 @@ def _parse_range_flag(range_str: str, file_content: str) -> str:
 
     # 1. Match full L:C-L:C or L:C..C format (e.g., 14:12-14:34, 14:12-16:5, 14:12..34)
     match_col_range = re.match(r"^(\d+):(\d+)(?:-|..)(\d+)(?::(\d+))?$", range_str)
+
     if match_col_range:
         s_line, s_col = int(match_col_range.group(1)), int(match_col_range.group(2))
-        
-        # If second line isn't specified (e.g. 14:12..34), end line is same as start line
+
         if match_col_range.group(4) is None:
             e_line = s_line
             e_col = int(match_col_range.group(3))
         else:
             e_line = int(match_col_range.group(3))
             e_col = int(match_col_range.group(4))
-            
-        # Bound-checking lines
+
         s_line_idx = max(0, min(s_line - 1, total_lines - 1))
         e_line_idx = max(0, min(e_line - 1, total_lines - 1))
-        
-        # Single line slice
+
         if s_line_idx == e_line_idx:
             line_str = lines[s_line_idx]
             s_col_idx = max(0, min(s_col - 1, len(line_str)))
             e_col_idx = max(0, min(e_col, len(line_str)))
 
             return line_str[s_col_idx:e_col_idx]
-        
-        # Multiline slice
+
         selected_lines = []
-        # First line remainder
         first_line = lines[s_line_idx]
+
         selected_lines.append(first_line[max(0, s_col - 1):])
-        
-        # Middle lines
+
         for l in range(s_line_idx + 1, e_line_idx):
             selected_lines.append(lines[l])
-            
-        # Final line prefix
+
         last_line = lines[e_line_idx]
+
         selected_lines.append(last_line[:max(0, e_col)])
 
         return "\n".join(selected_lines)
 
     # 2. Match line-only ranges (e.g., '14-16' or single line '14')
     match_line_only = re.match(r"^(\d+)(?:-(\d+))?$", range_str)
+
     if match_line_only:
         s_line = int(match_line_only.group(1))
         e_line = int(match_line_only.group(2)) if match_line_only.group(2) else s_line
-        
+
         s_line_idx = max(0, min(s_line - 1, total_lines - 1))
         e_line_idx = max(0, min(e_line, total_lines))
 
@@ -321,8 +323,6 @@ def _parse_range_flag(range_str: str, file_content: str) -> str:
 
 
 def handle_migrate(args, cm: ConfigManager):
-    """Handles logic for the 'migrate' subcommand."""
-
     if args.file:
         with open(args.file, 'r', encoding='utf-8') as f:
             legacy_code_snippet = f.read()
@@ -375,16 +375,16 @@ def handle_migrate(args, cm: ConfigManager):
                     "audit_trail": audit_trail
                 }, f, indent=2)
         except Exception as e:
-            print(f"[X] Failed Writing Confidence Report File: {e}", file=sys.stderr)
+            log_error(f"Failed Writing Confidence Report File: {e}")
 
     if args.output:
         try:
             with open(args.output, "w", encoding="utf-8") as f:
                 f.write(migrated_code)
 
-            print(f"Migrated Source Code Successfully Saved to {args.output}.", file=sys.stderr)
+            log_info(f"Migrated Source Code Successfully Saved to {args.output}.")
         except Exception as e:
-            print(f"[X] Failed to Save the Migrated Source Code: {e}.", file=sys.stderr)
+            log_error(f"Failed to Save the Migrated Source Code: {e}.")
 
             return
 
@@ -398,8 +398,6 @@ def handle_migrate(args, cm: ConfigManager):
 
 
 def handle_map(args, cm: ConfigManager):
-    """Handles logic for the 'map' subcommand."""
-
     verbose = cm.get("general.verbose", False)
     mapper = mapper_agent(config_manager=cm)
     result = mapper.run(path_a=args.path_v1, path_b=args.path_v2, thread_id=args.thread_id)
@@ -413,9 +411,9 @@ def handle_map(args, cm: ConfigManager):
                 json.dump(result, f, indent=4)
 
             if verbose:
-                print(f"Mapping Table Successfully Saved to {args.output}.", file=sys.stderr)
+                log_info(f"Mapping Table Successfully Saved to {args.output}.")
         except Exception as e:
-            print(f"[X] {e}", file=sys.stderr)
+            log_error(f"{e}")
         return
 
 
@@ -451,9 +449,11 @@ def main():
 
     if not args.command:
         parser.print_help()
+
         sys.exit(1)
 
     cm = ConfigManager()
+
     apply_cli_overrides(args, cm, args.command)
 
     if args.command in ['migrate', 'map']:

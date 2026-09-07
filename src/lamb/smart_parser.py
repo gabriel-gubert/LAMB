@@ -1,13 +1,16 @@
-import sys
 from dataclasses import dataclass
-from enum import Enum
-from typing import Set, List, Dict, Any, Optional, Tuple
+from typing import Set, List, Dict, Any, Optional
 
 import tree_sitter_language_pack as tslp
 from tree_sitter import Parser, Node
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
+from .logger import (
+    log_info,
+    log_warn,
+    log_error
+)
 from .rate_limited_chat import RateLimitedChatOpenAI
 from .output_templates import (
     Language,
@@ -20,37 +23,10 @@ from .prompt_templates import (
     get_parse_prompt,
     get_type_inference_prompt,
 )
-
-
-# =========================================================================
-# ENUMS & DATACLASSES
-# =========================================================================
-
-@dataclass
-class ASTRange:
-    """
-    Represents full source location bounds across lines, columns, and raw bytes.
-    Line numbers are 1-indexed; column offsets and byte ranges are 0-indexed.
-    """
-    start_line: int
-    start_column: int
-    end_line: int
-    end_column: int
-    start_byte: int
-    end_byte: int
-
-
-@dataclass
-class ASTSyntaxError:
-    """
-    Represents a granular syntax error detected during Tree-Sitter parsing.
-    """
-    error_id: int
-    node_type: str
-    scope_name: str
-    message: str
-    range: ASTRange
-    node_text: str
+from .types import (
+    ASTRange,
+    ASTSyntaxError
+)
 
 
 class SmartParser:
@@ -81,29 +57,25 @@ class SmartParser:
         self.parser = None
         self._is_parsed = False
 
-    # =========================================================================
-    # LOGGING HELPERS
-    # =========================================================================
 
     def _log_info(self, message: str) -> None:
         if self.verbose:
-            print(f"[*] {message}", file=sys.stderr)
+            log_info(message)
+
 
     def _log_warn(self, message: str) -> None:
         if self.verbose:
-            print(f"[/!\\] {message}", file=sys.stderr)
+            log_warn(message)
+
 
     def _log_error(self, message: str) -> None:
         if self.verbose:
-            print(f"[X] {message}", file=sys.stderr)
+            log_error(message)
 
-    # =========================================================================
-    # PARSING & EXTRACTORS
-    # =========================================================================
 
     def _detect_language(self) -> str:
         available_languages = list(tslp.available_languages())
-        self._log_info("Detecting Programming Language Via LLM...")
+        self._log_info("Detecting Programming Language...")
 
         messages = [
             SystemMessage(content=get_language_prompt(available_languages)),
@@ -113,11 +85,15 @@ class SmartParser:
         try:
             response = self.detector.invoke(messages)
             detected_lang = response.language.value.strip().lower()
+
             self._log_info(f"Detected Programming Language: '{detected_lang}'.")
+
             return detected_lang
         except Exception as E:
             self._log_error(f"Failed Programming Language Detection (Fallback To `python`): {E}")
+
             return "python"
+
 
     def _ensure_language_installed(self) -> bool:
         if not self.language:
@@ -132,11 +108,13 @@ class SmartParser:
             self._log_info(f"Downloading Tree-Sitter Grammar For '{self.language}'...")
             tslp.download([self.language])
             self._log_info(f"Successfully Installed Grammar For '{self.language}'.")
+
             return True
         except Exception as e:
             self._log_error(f"Tree-Sitter Language Grammar Download Failed: {e}")
 
         return False
+
 
     def parse(self) -> bool:
         if self._is_parsed:
@@ -146,27 +124,33 @@ class SmartParser:
 
         if not self._ensure_language_installed():
             self._log_error(f"Cannot Parse Code: Grammar For '{self.language}' Unavailable.")
+
             return False
 
         try:
             language_obj = tslp.get_language(self.language)
             self.parser = Parser(language_obj)
             self.tree = self.parser.parse(bytes(self.code, "utf8"))
+
             self._log_info(f"Tree-Sitter AST Construction Complete For '{self.language}'.")
 
             self._extract_type_identifiers_via_llm()
             self._analyze_external_variable_usages_via_llm()
 
             self._is_parsed = True
-            self._log_info("SmartParser Parsing Sequence Completed Successfully.")
-            return True
 
+            self._log_info("SmartParser Parsing Sequence Completed Successfully.")
+
+            return True
         except Exception as e:
             self._log_error(f"Failed Parsing {self.language}: {e}")
+
             return False
 
+
     def _extract_type_identifiers_via_llm(self):
-        self._log_info("Extracting Type Identifiers Via LLM...")
+        self._log_info("Extracting Identifiers...")
+
         prompt = get_parse_prompt()
 
         messages = [
@@ -179,16 +163,14 @@ class SmartParser:
 
             for item in response.identifiers:
                 self.symbols.add(item.name)
+
                 if item.fully_qualified_name:
                     self.fully_qualified_symbols.add(item.fully_qualified_name)
 
-            self._log_info(
-                f"LLM Identifier Extraction: Found {len(self.symbols)} Bare Symbol(s) "
-                f"And {len(self.fully_qualified_symbols)} Fully-Qualified Symbol(s)."
-            )
-
+            self._log_info(f"Found {len(self.symbols)} Symbol(s) and {len(self.fully_qualified_symbols)} Fully-Qualified Symbol(s).")
         except Exception as e:
-            self._log_error(f"LLM Type Identifier Extraction Failed: {e}")
+            self._log_error(f"Identifier Extraction Failed: {e}")
+
 
     def get_identifiers(self) -> Set[str]:
         if not self._is_parsed:
@@ -196,11 +178,13 @@ class SmartParser:
 
         return self.symbols
 
+
     def get_fully_qualified_identifiers(self) -> Set[str]:
         if not self._is_parsed:
             self.parse()
 
         return self.fully_qualified_symbols
+
 
     def get_external_variable_contexts(self) -> Dict[str, ExternalVariableInference]:
         if not self._is_parsed:
@@ -208,12 +192,15 @@ class SmartParser:
 
         return self.external_usage_contexts
 
+
     def _analyze_external_variable_usages_via_llm(self, mapping_table: Optional[List[Any]] = None):
         """
         Uses LLM reasoning to identify undeclared external variables and infer 
         their types based on usage patterns and an optional schema mapping table.
         """
-        self._log_info("Analyzing External Variable Usage Contexts Via LLM...")
+
+        self._log_info("Analyzing External Variable Usage...")
+
         prompt = get_type_inference_prompt(mapping_table)
 
         messages = [
@@ -230,25 +217,28 @@ class SmartParser:
             }
 
             self._log_info(f"External Variable Inference: Analyzed {len(self.external_usage_contexts)} Non-Local Context(s).")
-
         except Exception as e:
-            self._log_error(f"LLM External Variable Type Inference Failed: {e}")
+            self._log_error(f"External Variable Type Inference Failed: {e}")
+
 
     def infer_type_from_schema(self, var_name: str, mapping_table: List[Any]) -> Dict[str, Any]:
         """
         Triggers LLM-based type inference against a schema mapping table 
         and returns the result dictionary for the target variable.
         """
+
         if not self._is_parsed:
             self.parse()
 
         self._log_info(f"Inferring Schema Type For Variable '{var_name}'...")
+
         self._analyze_external_variable_usages_via_llm(mapping_table=mapping_table)
 
         ctx = self.external_usage_contexts.get(var_name)
 
         if not ctx:
             self._log_warn(f"Variable '{var_name}' Not Found In External Usage Contexts.")
+
             return {"status": "UNKNOWN", "candidate_class": None}
 
         return {
@@ -257,29 +247,36 @@ class SmartParser:
             "schema_type": ctx.schema_type,
         }
 
+
     def get_syntax_errors(self) -> List[ASTSyntaxError]:
         """
         Traverses the AST to extract granular syntax errors pinpointed 
         at the exact leaf node or missing token location.
         """
+
         if not self._is_parsed:
             self.parse()
 
         if not self.tree or not self.tree.root_node:
             self._log_warn("AST Unavailable For Syntax Error Inspection.")
+
             return []
 
         self._log_info("Inspecting AST For Syntax Errors...")
+
         errors: List[ASTSyntaxError] = []
         error_counter = 1
+
 
         def find_leaf_errors(node: Node) -> List[Node]:
             if not node.children or node.is_missing:
                 if node.is_missing or node.type == "ERROR" or (node.parent and node.parent.type == "ERROR"):
                     return [node]
+
                 return []
 
             leaf_errors = []
+
             for child in node.children:
                 leaf_errors.extend(find_leaf_errors(child))
 
@@ -287,6 +284,7 @@ class SmartParser:
                 return [node]
 
             return leaf_errors
+
 
         def traverse(node: Node):
             nonlocal error_counter
@@ -303,6 +301,7 @@ class SmartParser:
                         msg = f"Unexpected Token '{token_text}'"
 
                     parent = err_node.parent
+
                     while parent and parent.type == "ERROR":
                         parent = parent.parent
                     
@@ -334,9 +333,11 @@ class SmartParser:
 
         return errors
 
+
     @staticmethod
     def _node_to_range(node: Node) -> ASTRange:
         """Converts a Tree-Sitter Node's spatial boundaries into an ASTRange instance."""
+
         return ASTRange(
             start_line=node.start_point[0] + 1,
             start_column=node.start_point[1],

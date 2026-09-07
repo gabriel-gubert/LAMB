@@ -1,7 +1,6 @@
 import hashlib
 import importlib.resources
 import json
-import logging
 import os
 import random
 import re
@@ -19,13 +18,13 @@ import numpy as np
 
 from markdownify import markdownify as md
 
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain_core.document_loaders.blob_loaders import Blob
 from langchain_community.document_loaders.parsers import LanguageParser
 from langchain_text_splitters import (
+    Language,
     RecursiveCharacterTextSplitter,
     MarkdownHeaderTextSplitter,
 )
@@ -34,7 +33,16 @@ import tree_sitter_html as tshtml
 from tree_sitter import Language, Parser
 
 from .types import Complexity
-from .output_templates import ElementsExtraction, MappingRow, ResolutionResult, DirectoryDiscovery
+from .rate_limited_chat import (
+    RateLimitedChatOpenAI,
+    RateLimitedOpenAIEmbeddings
+)
+from .output_templates import (
+    ElementsExtraction,
+    MappingRow,
+    ResolutionResult,
+    DirectoryDiscovery
+)
 from .prompt_templates import (
     get_mapper_extraction_prompt,
     get_general_mapper_resolution_prompt,
@@ -43,17 +51,26 @@ from .prompt_templates import (
     get_consensus_arbitration_prompt,
     get_directory_discovery_prompt
 )
-from .logger import print_agent_state, display_rich_matrix, display_mapping_table
+from .logger import (
+    log_info,
+    log_warn,
+    log_error,
+    print_agent_state,
+    display_rich_matrix,
+    display_mapping_table
+)
 
-logger = logging.getLogger(__name__)
 
 try:
     config_file = importlib.resources.files("lamb").joinpath("languages.yaml")
+
     with config_file.open("r", encoding="utf-8") as conf_f:
         LINGUIST_CONFIG = yaml.safe_load(conf_f)
 except Exception as e:
-    print(f'[X] Failed Loading "languages.yaml": {e}', file=sys.stderr)
+    log_error(f"Failed Loading \"languages.yaml\": {e}")
+
     LINGUIST_CONFIG = {}
+
 
 def _hash_and_clean_chunk_batch(item: dict) -> tuple[str, str, str, str]:
     """Processes a single chunk. Placed at the top-level of the file 
@@ -68,6 +85,7 @@ def _hash_and_clean_chunk_batch(item: dict) -> tuple[str, str, str, str]:
     chunk_hash = hashlib.sha256(cleaned_text.encode("utf-8")).hexdigest()
 
     return chunk_hash, cleaned_text, item["file_path"], item["version"]
+
 
 def _calculate_file_strategy(file_path: str) -> dict:
     """Analyzes a single file's size and extension to determine the optimal chunk size."""
@@ -101,6 +119,7 @@ def _calculate_file_strategy(file_path: str) -> dict:
     except Exception:
         return {"chunk_size": 4000, "chunk_overlap": 400, "batch_grouping": False, "tier": ""}
 
+
 def _is_strictly_tree_sitter_html(content: str) -> bool:
     """Uses a formal Tree-sitter grammar AST parser to strictly validate HTML compliance."""
 
@@ -123,6 +142,7 @@ def _is_strictly_tree_sitter_html(content: str) -> bool:
         return has_elements
     except Exception:
         raise RuntimeError(f"[X] Tree-sitter Parser Failed: {e}")
+
 
 def _split_file(file_path: str = None, content: str = None, ext: str = ".txt", chunk_size: int = 4000, chunk_overlap: int = 400) -> List[str]:
     """Determines splitting logic using the Linguist YAML 'type' field, accepting either a file path or direct string content."""
@@ -152,17 +172,16 @@ def _split_file(file_path: str = None, content: str = None, ext: str = ".txt", c
     if detected_type == "programming":
         try:
             parser = LanguageParser()
-            blob = Blob.from_data(content)
-            ast_docs = parser.parse(blob)
+            blob = Blob.from_data(content, path=file_path or f"filename{ext}")
+            ast_docs = parser.lazy_parse(blob)
+            final_docs = recursive_char_splitter.split_documents(ast_docs)
 
-            combined_code = "\n\n".join([doc.page_content for doc in ast_docs])
-
-            return recursive_char_splitter.split_text(combined_code)
+            return [doc.page_content for doc in final_docs]
         except Exception as E:
             if file_path:
-                print(f"[X] Failed Splitting Content from File at \"{file_path}\". Falling Back to Recursive Character Splitter: {E}", file=sys.stderr)
+                log_error(f"Failed Splitting Content from File at \"{file_path}\". Falling Back to Recursive Character Splitter: {E}")
             else:
-                print(f"[X] Failed Splitting Content. Falling Back to Recursive Character Splitter: {E}", file=sys.stderr)
+                log_error(f"Failed Splitting Content. Falling Back to Recursive Character Splitter: {E}")
 
     if detected_type == "markup":
         try:
@@ -170,9 +189,9 @@ def _split_file(file_path: str = None, content: str = None, ext: str = ".txt", c
                 is_html = _is_strictly_tree_sitter_html(content)
             except Exception as E:
                 if file_path:
-                    print(f"[X] Tree-sitter Failed for {file_path}. Falling Back to Regex HTML Detection: {E}", file=sys.stderr)
+                    log_error(f"Tree-sitter Failed for {file_path}. Falling Back to RegEx HTML Detection: {E}")
                 else:
-                    print(f"[X] Tree-sitter Failed: {E}. Falling Back to Regex HTML Detection: {E}", file=sys.stderr)
+                    log_error(f"Tree-sitter Failed: {E}. Falling Back to RegEx HTML Detection: {E}")
 
                 is_html = bool(re.search(r'</?\s*[a-zA-Z][^>]*>', content))
 
@@ -199,11 +218,12 @@ def _split_file(file_path: str = None, content: str = None, ext: str = ".txt", c
             return [doc.page_content for doc in final_docs]
         except Exception as E:
             if file_path:
-                print(f"[X] Failed Splitting Content from File at \"{file_path}\". Falling Back to Recursive Character Splitter: {E}", file=sys.stderr)
+                log_error(f"Failed Splitting Content from File at \"{file_path}\". Falling Back to Recursive Character Splitter: {E}")
             else:
-                print(f"[X] Failed Splitting Content. Falling Back to Recursive Character Splitter: {E}", file=sys.stderr)
+                log_error(f"Failed Splitting Content. Falling Back to Recursive Character Splitter: {E}")
 
     return recursive_char_splitter.split_text(content)
+
 
 def _process_single_file_split(file_path: str, version: str) -> list[dict]:
     """Top-level worker function executed by ProcessPoolExecutor.
@@ -227,11 +247,14 @@ def _process_single_file_split(file_path: str, version: str) -> list[dict]:
             for chunk in chunks
         ]
     except Exception as E:
-        print(f"[X] Failed Chunking Artifact at \"{file_path}\": {E}", file=sys.stderr)
+        log_error(f"Failed Chunking Artifact at \"{file_path}\": {E}")
 
         return []
 
+
 class MapperAgentState(TypedDict):
+    run_id: str
+
     # --- Input Parameters ---
     dir_v1: str
     dir_v2: str
@@ -242,13 +265,19 @@ class MapperAgentState(TypedDict):
     files_v1: List[str]
     files_v2: List[str]
 
-    # --- Chunking Layer queues ---
+    # --- Sanitization Layer ---
     files_v1_queue: List[str]
     files_v2_queue: List[str]
+    sanitized_files_v1: List[str]
+    sanitized_files_v2: List[str]
 
-    # --- Intermediate Processing & Global Deduplication Buffers ---
+    # --- Chunking Layer queues ---
+    sanitized_files_v1_queue: List[str]
+    sanitized_files_v2_queue: List[str]
     raw_chunks_buffer: List[dict]
     chunk_registry: Dict[str, dict]
+
+    # --- Intermediate Processing & Global Deduplication Buffers ---
     deduplication_queue: List[dict]
 
     # --- Extraction Execution Layer ---
@@ -283,21 +312,23 @@ class MapperAgentState(TypedDict):
     # --- Global Final Output Target ---
     mappings: List[dict]
 
+
 class MapperAgent:
     def __init__(
             self,
-            discoverer: ChatOpenAI,
-            extractor: ChatOpenAI,
-            embedder: OpenAIEmbeddings,
-            resolver_agent_1: ChatOpenAI,
-            resolver_agent_2: Optional[ChatOpenAI] = None,
-            resolver_agent_3: Optional[ChatOpenAI] = None,
+            discoverer: RateLimitedChatOpenAI,
+            extractor: RateLimitedChatOpenAI,
+            embedder: RateLimitedOpenAIEmbeddings,
+            resolver_agent_1: RateLimitedChatOpenAI,
+            resolver_agent_2: Optional[RateLimitedChatOpenAI] = None,
+            resolver_agent_3: Optional[RateLimitedChatOpenAI] = None,
             multi_agent: bool = False,
             discovery_batch_size: int = 20,
             resolver_batch_size: int = 20,
             verbose: bool = False,
             stage_output_dir: Optional[str | Path] = None,
-            database_path: str = "~/.lamb/map_checkpoint.db"
+            database_path: str = "~/.lamb/map_checkpoint.db",
+            tmp_dir: str = "~/.lamb/tmp"
         ):
         self._discoverer = discoverer.with_structured_output(DirectoryDiscovery).with_retry(stop_after_attempt=2)
         self._extractor = extractor.with_structured_output(ElementsExtraction).with_retry(stop_after_attempt=2)
@@ -312,13 +343,21 @@ class MapperAgent:
 
         if self.multi_agent:
             if self.verbose:
-                print("[*] Enabling Multi-Agent Resolution...", file=sys.stderr)
+                log_info(f"Enabling Multi-Agent Resolution...")
+
             if not (self._resolver_2 and self._resolver_3):
-                print("    [!] Missing Resolver Agents 2 or 3. Falling back to Single Agent.", file=sys.stderr)
-                self.multi_agent = False
+                if self.verbose:
+                    log_info(f"Missing Resolver Agents 2 or 3. Falling back to Single Agent.")
+
+                    self.multi_agent = False
 
         self.resolver_batch_size = resolver_batch_size
         self.discovery_batch_size = discovery_batch_size
+
+        self.tmp_dir = Path(tmp_dir) if tmp_dir else None
+
+        if self.tmp_dir:
+            self.tmp_dir.mkdir(exist_ok=True, parents=True)
 
         self.output_dir = Path(stage_output_dir) if stage_output_dir else None
 
@@ -334,6 +373,7 @@ class MapperAgent:
         self.graph = self._build_graph()
         self.valid_extensions = self._load_valid_extensions()
 
+
     def _save_stage_output(self, stage_name: str, data: Any) -> None:
         """Helper to save the state update of a stage to a JSON file if configured."""
 
@@ -343,16 +383,15 @@ class MapperAgent:
         output_path = self.output_dir / f"{stage_name}_output.json"
 
         if self.verbose:
-            print(f"[*] Saving {stage_name.replace("_", " ").title()} to \"{output_path}\"...", file=sys.stderr)
+            log_info(f"Saving {stage_name.replace("_", " ").title()} to \"{output_path}\"...")
 
         try:
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4, default=str)
         except Exception as e:
-            logger.error(f"[X] Failed Saving to \"{output_path}\": {e}")
-
             if self.verbose:
-                print(f"[X] Failed Saving to \"{output_path}\": {e}", file=sys.stderr)
+                log_error(f"Failed Saving to \"{output_path}\": {e}")
+
 
     def _build_graph(self) -> StateGraph:
         """Constructs and compiles the LangGraph state machine with full crash resilience,
@@ -371,6 +410,8 @@ class MapperAgent:
         workflow.add_node("discovery_step", self._discovery_step)
 
         # Chunking Sub-Graph Nodes
+        workflow.add_node("prep_sanitization", self._prepare_sanitization_queues)
+        workflow.add_node("sanitize_files", self._sanitize_files)
         workflow.add_node("prep_chunking", self._prepare_chunk_queues)
         workflow.add_node("chunk_files", self._chunk_files)
         workflow.add_node("prep_chunk_dedup_queue", self._prepare_chunk_deduplication_queue)
@@ -398,11 +439,13 @@ class MapperAgent:
             self._should_continue_discovery,
             {
                 "discovery_step": "discovery_step", 
-                "prep_chunking": "prep_chunking"
+                "prep_sanitization": "prep_sanitization"
             }
         )
         
         # --- Queue Prep to Loop Handshake ---
+        workflow.add_edge("prep_sanitization", "sanitize_files")
+        workflow.add_edge("sanitize_files", "prep_chunking")
         workflow.add_edge("prep_chunking", "chunk_files")
         
         # --- File Chunking Routing Loop ---
@@ -497,9 +540,6 @@ class MapperAgent:
             )
             workflow.add_edge("map_single_finalize", END)
 
-        # =========================================================================
-        # 4. COMPILATION
-        # =========================================================================
         return workflow.compile(checkpointer=self.memory)
 
     @staticmethod
@@ -528,6 +568,7 @@ class MapperAgent:
             element.get("signature", "")
         )
 
+
     def _load_valid_extensions(self) -> Set[str]:
         """Loads and filters extensions from languages.yaml for markup, prose, and programming types."""
 
@@ -537,7 +578,7 @@ class MapperAgent:
             return set()
 
         if self.verbose:
-            print(f"[*] Loading \"{yaml_path}\"...", file=sys.stderr)
+            log_info(f"Loading \"{yaml_path}\"...")
 
         try:
             with open(yaml_path, "r", encoding="utf-8") as f:
@@ -558,12 +599,11 @@ class MapperAgent:
 
             return valid_exts
         except Exception as e:
-            logger.error(f"[X] Failed Loading \"languages.yaml\": {e}")
-
             if self.verbose:
-                print(f"[X] Failed Loading \"languages.yaml\": {e}", file=sys.stderr)
+                log_error(f"Failed Loading \"languages.yaml\": {e}")
 
             return set()
+
 
     def _gather_directory_samples(self, directory: str) -> List[dict]:
         """Scans directories and creates structural metadata payloads for the LLM to filter."""
@@ -574,7 +614,7 @@ class MapperAgent:
         root_path = Path(directory)
 
         if self.verbose:
-            print(f"[*] Profiling Root Directory \"{root_path}\"...", file=sys.stderr)
+            log_info(f"Profiling Root Directory \"{root_path}\"...")
 
         if not root_path.exists():
             return []
@@ -612,6 +652,7 @@ class MapperAgent:
 
         return dir_samples
 
+
     def _gather_files_from_chosen_directories(self, chosen_paths: List[Path], valid_extensions: Set[str]) -> List[str]:
         """Inspects selected paths and returns individual files matching extension whitelist rules."""
 
@@ -622,7 +663,7 @@ class MapperAgent:
 
         for path in chosen_paths:
             if self.verbose:
-                print(f"[*] Collecting Artifact(s) from \"{path}\"...", file=sys.stderr)
+                log_info(f"Collecting Artifact(s) from \"{path}\"...")
 
             if not path.exists() or is_hidden(path):
                 continue
@@ -634,6 +675,7 @@ class MapperAgent:
 
         return sorted(list(matched_files))
 
+
     def _init_discovery(self, state: MapperAgentState) -> dict:
         """Node: Gathers structural folders and stages them into active state queues."""
 
@@ -642,7 +684,7 @@ class MapperAgent:
 
         if self.verbose:
             # print_agent_state({"dir_v1": dir_v1, "dir_v2": dir_v2})
-            print(f"[*] Profiling Root Directory at \"{dir_v1}\" for V1 and Root Directory at \"{dir_v2}\" for V2...", file=sys.stderr)
+            log_info(f"Profiling Root Directory at \"{dir_v1}\" for V1 and Root Directory at \"{dir_v2}\" for V2...")
 
         return {
             "dir_v1": "",
@@ -652,6 +694,7 @@ class MapperAgent:
             "files_v1": [],
             "files_v2": []
         }
+
 
     def _discovery_step(self, state: MapperAgentState) -> dict:
         """Evaluates a single batched chunk of staged folders through LLM routers."""
@@ -693,10 +736,8 @@ class MapperAgent:
                 if llm_result and hasattr(llm_result, "directories"):
                     chosen_paths.extend([Path(p) for p in llm_result.directories])
         except Exception as E:
-            logger.error(f"[X] Failed Calling Discovery Batch: {E}")
-
             if self.verbose:
-                print(f"[X] Failed Calling Discovery Batch: {E}", file=sys.stderr)
+                log_error(f"Failed Calling Discovery Batch: {E}")
 
             raise E
 
@@ -710,6 +751,7 @@ class MapperAgent:
             files_v2.extend(new_files)
 
             return {"discovery_queue_v2": queue_v2, "files_v2": sorted(list(set(files_v2)))}
+
 
     def _should_continue_discovery(self, state: MapperAgentState) -> str:
         """Conditional Router checking if directory exploration queues are exhausted."""
@@ -727,19 +769,150 @@ class MapperAgent:
 
         return "prep_chunking"
 
-    def _prepare_chunk_queues(self, state: MapperAgentState) -> dict:
-        """Runs once after discovery completes to setup the chunking tracking loops
-        and initialize the shared processing buffers.
-        """
 
+    def _prepare_sanitization_queues(self, state: MapperAgentState) -> dict:
         if self.verbose:
-            print(f"[*] Running Artifact(s) Chunking...", file=sys.stderr)
+            log_info(f"Running Artifact(s) Boilerplate Removal...")
 
         return {
             "files_v1": [],
             "files_v2": [],
             "files_v1_queue": list(state.get("files_v1", [])),
             "files_v2_queue": list(state.get("files_v2", [])),
+            "sanitized_files_v1": [],
+            "sanitized_files_v2": []
+        }
+
+
+    def _sanitize_files(self, state: MapperAgentState) -> Dict[str, Any]:
+        v1_queue = list(state.get("files_v1_queue", []))
+        v2_queue = list(state.get("files_v2_queue", []))
+
+        run_id = state.get("run_id", "default")
+
+        if self.tmp_dir and isinstance(self.tmp_dir, Path):
+            cache_dir = self.tmp_dir / str(run_id)
+        else:
+            cache_dir = Path("~/.lamb/tmp") / str(run_id)
+
+        sanitized_v1_dir = cache_dir / "v1"
+        sanitized_v2_dir = cache_dir / "v2"
+
+        sanitized_v1_dir.mkdir(parents=True, exist_ok=True)
+        sanitized_v2_dir.mkdir(parents=True, exist_ok=True)
+
+        result = {}
+
+        if v1_queue:
+            if self.verbose:
+                log_info("Removing Boilerplate from V1 Artifact(s)...")
+
+            counts = Counter()
+            v1_cache = []
+
+            for file_path in v1_queue:
+                try:
+                    path = Path(file_path)
+                    content = path.read_text(encoding="utf-8")
+
+                    v1_cache.append((file_path, content))
+
+                    ext = path.suffix.lstrip(".").lower()
+                    matched_lang = next((lang for lang in Language if lang.value.lower() == ext or lang.name.lower() == ext), None)
+                    scanner = RecursiveCharacterTextSplitter.from_language(language=matched_lang) if matched_lang else RecursiveCharacterTextSplitter(chunk_size=150, chunk_overlap=0)
+
+                    blocks = {c.strip() for c in scanner.split_text(content) if len(c.strip()) >= 30}
+
+                    counts.update(blocks)
+                except Exception:
+                    continue
+
+            bp_v1 = [block for block, count in counts.items() if count >= 3]
+
+            sanitized_files_v1 = []
+            seen_bp = set()
+
+            for file_path, content in v1_cache:
+                for bp in bp_v1:
+                    if bp in content:
+                        if bp in seen_bp:
+                            content = content.replace(bp, "")
+                        else:
+                            seen_bp.add(bp)
+
+                            parts = content.split(bp)
+                            content = parts[0] + bp + "".join(parts[1:])
+
+                out_path = sanitized_v1_dir / Path(file_path).name
+
+                out_path.write_text(content, encoding="utf-8")
+                sanitized_files_v1.append(str(out_path))
+
+            result["sanitized_files_v1"] = sanitized_files_v1
+
+        if v2_queue:
+            if self.verbose:
+                log_info("Removing Boilerplate from V2 Artifact(s)...")
+
+            counts = Counter()
+            v2_cache = []
+
+            for file_path in v2_queue:
+                try:
+                    path = Path(file_path)
+                    content = path.read_text(encoding="utf-8")
+
+                    v2_cache.append((file_path, content))
+
+                    ext = path.suffix.lstrip(".").lower()
+                    matched_lang = next((lang for lang in Language if lang.value.lower() == ext or lang.name.lower() == ext), None)
+                    scanner = RecursiveCharacterTextSplitter.from_language(language=matched_lang, chunk_size=150, chunk_overlap=0) if matched_lang else RecursiveCharacterTextSplitter(chunk_size=150, chunk_overlap=0)
+
+                    blocks = {c.strip() for c in scanner.split_text(content) if len(c.strip()) >= 30}
+
+                    counts.update(blocks)
+                except Exception:
+                    continue
+
+            bp_v2 = [block for block, count in counts.items() if count >= 3]
+
+            sanitized_files_v2 = []
+            seen_bp = set()
+
+            for file_path, content in v2_cache:
+                for bp in bp_v2:
+                    if bp in content:
+                        if bp in seen_bp:
+                            content = content.replace(bp, "")
+                        else:
+                            seen_bp.add(bp)
+
+                            parts = content.split(bp)
+                            content = parts[0] + bp + "".join(parts[1:])
+
+                out_path = sanitized_v2_dir / Path(file_path).name
+
+                out_path.write_text(content, encoding="utf-8")
+                sanitized_files_v2.append(str(out_path))
+
+            result["sanitized_files_v2"] = sanitized_files_v2
+
+        return result
+
+
+    def _prepare_chunk_queues(self, state: MapperAgentState) -> dict:
+        """Runs once after discovery completes to setup the chunking tracking loops
+        and initialize the shared processing buffers.
+        """
+
+        if self.verbose:
+            log_info(f"Running Artifact(s) Chunking...")
+
+        return {
+            "sanitized_files_v1": [],
+            "sanitized_files_v2": [],
+            "sanitized_files_v1_queue": list(state.get("sanitized_files_v1", [])),
+            "sanitized_files_v2_queue": list(state.get("sanitized_files_v2", [])),
             "raw_chunks_buffer": []
         }
 
@@ -748,8 +921,8 @@ class MapperAgent:
         CPU cores using ProcessPoolExecutor, and updates the state buffer.
         """
 
-        v1_queue = list(state.get("files_v1_queue", []))
-        v2_queue = list(state.get("files_v2_queue", []))
+        v1_queue = list(state.get("sanitized_files_v1_queue", []))
+        v2_queue = list(state.get("sanitized_files_v2_queue", []))
         raw_chunks_buffer = list(state.get("raw_chunks_buffer", []))
 
         if not v1_queue and not v2_queue:
@@ -797,20 +970,20 @@ class MapperAgent:
         }
 
         if is_v1:
-            result["files_v1_queue"] = v1_queue
+            result["sanitized_files_v1_queue"] = v1_queue
         else:
-            result["files_v2_queue"] = v2_queue
+            result["sanitized_files_v2_queue"] = v2_queue
 
         return result
 
     def _should_continue_chunking(self, state: MapperAgentState) -> str:
         """Controls the routing loop processing files into raw chunks."""
 
-        if state.get("files_v1_queue") or state.get("files_v2_queue"):
+        if state.get("sanitized_files_v1_queue") or state.get("sanitized_files_v2_queue"):
             return "chunk_files"
 
         if self.verbose:
-            print(f"[*] Split Artifact(s) in {len(state.get("raw_chunks_buffer", []))} Total Chunk(s).", file=sys.stderr)
+            log_info(f"Split Artifact(s) in {len(state.get("raw_chunks_buffer", []))} Total Chunk(s).")
 
         return "prep_chunk_dedup_queue"
 
@@ -820,7 +993,7 @@ class MapperAgent:
         """
 
         if self.verbose:
-            print(f"[*] Running Global Chunk(s) Deduplication...", file=sys.stderr)
+            log_info(f"Running Global Chunk(s) Deduplication...")
 
         return {
             "raw_chunks_buffer": [],
@@ -879,7 +1052,7 @@ class MapperAgent:
             return "deduplicate_chunks"
 
         if self.verbose:
-            print(f"[*] Found {len(state.get("chunk_registry", {}).keys())} Total Unique Chunk(s).", file=sys.stderr)
+            log_info(f"Found {len(state.get("chunk_registry", {}).keys())} Total Unique Chunk(s).")
 
         return "prep_extraction"
 
@@ -931,7 +1104,7 @@ class MapperAgent:
         chunks_v2_queue = bundle_registry_items(v2_registry_items)
 
         if self.verbose:
-            print(f"[*] Running API Element(s) Extraction for {len(chunks_v1_queue)} V1 Chunk Bundle(s) and {len(chunks_v2_queue)} V2 Chunk Bundle(s)...", file=sys.stderr)
+            log_info(f"Running API Element(s) Extraction for {len(chunks_v1_queue)} V1 Chunk Bundle(s) and {len(chunks_v2_queue)} V2 Chunk Bundle(s)...")
 
         return {
             "chunk_registry": {},
@@ -983,10 +1156,8 @@ class MapperAgent:
                         
 
             except Exception as E:
-                logger.error(f"[X] API Element(s) Extraction Failed : {E}")
-
                 if self.verbose:
-                    print(f"[X] API Element(s) Extraction Failed : {E}", file=sys.stderr)
+                    log_error(f"API Element(s) Extraction Failed : {E}")
 
                 raise E
 
@@ -1008,7 +1179,7 @@ class MapperAgent:
             return "extract_step"
 
         if self.verbose:
-            print(f"[*] Found {len(state.get("extracted_v1", []))} API Element(s) for V1 and {len(state.get("extracted_v2", []))} API Element(s) for V2.", file=sys.stderr)
+            log_info(f"Found {len(state.get("extracted_v1", []))} API Element(s) for V1 and {len(state.get("extracted_v2", []))} API Element(s) for V2.")
 
         return "deduplicate_elements"
 
@@ -1029,7 +1200,7 @@ class MapperAgent:
             return unique_elements
 
         if self.verbose:
-            print(f"[*] Running Global API Element(s) Deduplication...", file=sys.stderr)
+            log_info(f"Running Global API Element(s) Deduplication...")
 
         extracted_v1 = deduplicate(state.get("extracted_v1", []))
         extracted_v2 = deduplicate(state.get("extracted_v2", []))
@@ -1042,7 +1213,7 @@ class MapperAgent:
         self._save_stage_output("extract", result)
 
         if self.verbose:
-            print(f"[*] Found {len(extracted_v1)} Unique API Element(s) for V1 and {len(extracted_v2)} Unique API Element(s) for V2.", file=sys.stderr)
+            log_info(f"Found {len(extracted_v1)} Unique API Element(s) for V1 and {len(extracted_v2)} Unique API Element(s) for V2.")
 
         return result
 
@@ -1158,7 +1329,7 @@ class MapperAgent:
         v1_candidates_map = {}
 
         if self.verbose:
-            print(f"[*] Running Preliminary V1 <-> V2 API Element(s) Matching...", file=sys.stderr)
+            log_info(f"Running Preliminary V1 <-> V2 API Element(s) Matching...")
 
         n_v1, n_v2 = z_matrix.shape
 
@@ -1231,7 +1402,7 @@ class MapperAgent:
 
         if not v1_elements or not v2_elements:
             if self.verbose:
-                print("[*] Skipping Initial Match: ONE OR BOTH VERSIONS HAVE NO ELEMENTS TO MATCH.", file=sys.stderr)
+                log_info(f"Skipping Initial Match: ONE OR BOTH VERSIONS HAVE NO ELEMENTS TO MATCH.")
 
             result = {"initial_mappings": [], "resolution_queue": []}
 
@@ -1240,7 +1411,7 @@ class MapperAgent:
             return result
 
         if self.verbose:
-            print(f"[*] Running Initial Match...", file=sys.stderr)
+            log_info(f"Running Initial Match...")
 
         sim_matrix = self._compute_similarity_matrix(v1_elements, v2_elements)
         z_matrix, _, _ = self._compute_modified_z_matrix(sim_matrix)
@@ -1284,7 +1455,7 @@ class MapperAgent:
             "raw_single": []
         }
 
-    def _execute_agent_mapping_step(self, state: MapperAgentState, resolver_client: ChatOpenAI, prompt: str, agent_label: str, queue_key: str, raw_key: str) -> dict:
+    def _execute_agent_mapping_step(self, state: MapperAgentState, resolver_client: RateLimitedChatOpenAI, prompt: str, agent_label: str, queue_key: str, raw_key: str) -> dict:
         """Processes a single batch of complex mappings for a specific agent strategy."""
 
         queue = list(state.get(queue_key, []))
@@ -1298,7 +1469,7 @@ class MapperAgent:
         batch = [queue.pop(0) for _ in range(min(len(queue), batch_size))]
 
         if self.verbose:
-            print(f"[{agent_label}] Routing Batch of {len(batch)} Complex Cases...", file=sys.stderr)
+            log_info(f"{agent_label}: Routing Batch of {len(batch)} Complex Cases...")
 
         try:
             response = resolver_client.invoke([
@@ -1310,10 +1481,8 @@ class MapperAgent:
                 for item in response.resolved_items:
                     raw_accumulated.append(item.model_dump() if hasattr(item, 'model_dump') else item)
         except Exception as E:
-            logger.error(f"[X] Batch Resolution for {agent_label} Failed: {E}")
-
             if self.verbose:
-                print(f"[X] Batch Resolution for {agent_label} Failed: {E}", file=sys.stderr)
+                log_error(f"Batch Resolution for {agent_label} Failed: {E}")
 
             raise E
 
@@ -1399,10 +1568,11 @@ class MapperAgent:
 
         if self.verbose:
             for i, maps in enumerate([maps_1, maps_2, maps_3], start=1):
-                print(f"\n[*] Mappings from Agent {i}:", file=sys.stderr)
+                log_info(f"Mappings from Agent {i}:")
+
                 display_mapping_table(maps)
 
-            print("\n[*] Reviewing Agent(s) Alignment...", file=sys.stderr)
+            log_info("Reviewing Agent(s) Alignment...")
 
         def get_source_key(m: dict) -> Tuple[str, str, str, str]:
             return (m.get("old_namespace", ""), m.get("old_class_interface", ""), m.get("old_member", ""), m.get("old_signature", ""))
@@ -1478,7 +1648,7 @@ class MapperAgent:
         batch = [queue.pop(0) for _ in range(min(len(queue), batch_size))]
 
         if self.verbose:
-            print(f"[*] Processing Stalemate Tie-Breaking Batch of {len(batch)} Complex Cases...", file=sys.stderr)
+            log_info(f"Processing Stalemate Tie-Breaking Batch of {len(batch)} Complex Cases...")
 
         try:
             response = self._resolver_1.invoke([
@@ -1490,10 +1660,8 @@ class MapperAgent:
                 for item in response.resolved_items:
                     raw_arbitrated.append(item.model_dump() if hasattr(item, 'model_dump') else item)
         except Exception as E:
-            logger.error(f"[X] Consensus Arbitration Failed: {E}")
-
             if self.verbose:
-                print(f"[X] Consensus Arbitration Failed: {E}", file=sys.stderr)
+                log_error(f"Consensus Arbitration Failed: {E}")
 
             raise E
 
@@ -1579,7 +1747,7 @@ class MapperAgent:
 
     def run(self, path_a: str, path_b: str, thread_id: str = "") -> List[dict]:
         if self.verbose:
-            print(f"Running Mapper Agent...", file=sys.stderr)
+            log_info(f"Running Mapper Agent...")
 
         try:
             if thread_id and thread_id.strip():
@@ -1588,14 +1756,15 @@ class MapperAgent:
 
                 if current_state.next:
                     if self.verbose:
-                        print(f"[*] Incomplete Checkpoint for \"{thread_id}\". Resuming from Node {current_state.next}.", file=sys.stderr)
+                        log_info(f"Incomplete Checkpoint for \"{thread_id}\". Resuming from Node {current_state.next}.")
 
                     initial_input = None
                 else:
                     if self.verbose:
-                        print(f"[*] No Checkpoints for \"{thread_id}\". Initiating Run \"{thread_id}\".", file=sys.stderr)
+                        log_info(f"No Checkpoints for \"{thread_id}\". Initiating Run \"{thread_id}\".")
 
                     initial_input = {
+                        "run_id": thread_id,
                         "dir_v1": path_a,
                         "dir_v2": path_b,
                         "discovery_queue_v1": [],
@@ -1604,6 +1773,10 @@ class MapperAgent:
                         "files_v2": [],
                         "files_v1_queue": [],
                         "files_v2_queue": [],
+                        "sanitized_files_v1": [],
+                        "sanitized_files_v2": [],
+                        "sanitized_files_v1_queue": [],
+                        "sanitized_files_v2_queue": [],
                         "raw_chunks_buffer": [],
                         "chunk_registry": {},
                         "deduplication_queue": [],
@@ -1631,7 +1804,7 @@ class MapperAgent:
                     }
             else:
                 if self.verbose:
-                    print("[*] No Thread ID. Disabling Checkpoint.", file=sys.stderr)
+                    log_info(f"No Thread ID. Disabling Checkpoint.")
 
                 initial_input = {"dir_v1": path_a, "dir_v2": path_b}
                 config = {}
@@ -1644,9 +1817,7 @@ class MapperAgent:
 
             return mappings
         except Exception as E:
-            logger.exception(f"[X] Mapper Agent Failed: {E}")
-
             if self.verbose:
-                print(f"[X] Mapper Agent Failed: {E}", file=sys.stderr)
+                log_error(f"Mapper Agent Failed: {E}")
 
             raise E

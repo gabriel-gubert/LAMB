@@ -3,9 +3,6 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 import tree_sitter_language_pack as tslp
 
-# ---------------------------------------------------------------------------
-# 1. API Extraction & Discovery Schemas
-# ---------------------------------------------------------------------------
 
 class APIElement(BaseModel):
     namespace: str = Field(default="", description="Namespace, package, or module name.")
@@ -145,25 +142,72 @@ class MigrationPlanSchema(BaseModel):
     overview: str = Field(description="High-level architectural summary of the migration.")
     steps: List[RefactoringStep] = Field(description="Ordered refactoring steps.")
 
+RefactoringOperation = Literal[
+    # Class & Interface Changes
+    "RENAME_CLASS",
+    "RENAME_INTERFACE",
+    "MOVE_CLASS",
+    "EXTRACT_INTERFACE",
+    "INLINE_CLASS",
+    
+    # Method & Function Changes
+    "RENAME_METHOD",
+    "MOVE_METHOD",
+    "CHANGE_SIGNATURE",
+    "ADD_PARAMETER",
+    "REMOVE_PARAMETER",
+    "REORDER_PARAMETERS",
+    "CHANGE_RETURN_TYPE",
+    "EXTRACT_METHOD",
+    "INLINE_METHOD",
+
+    # Symbol, Variable & Field Changes
+    "RENAME_SYMBOL",
+    "RENAME_FIELD",
+    "CHANGE_FIELD_TYPE",
+    "REPLACE_VARIABLE",
+    "EXTRACT_VARIABLE",
+    "INLINE_VARIABLE",
+
+    # Module & Import/Namespace Changes
+    "RENAME_NAMESPACE",
+    "MOVE_MODULE",
+    "UPDATE_IMPORT",
+
+    # Syntax, Expression & Construct Changes
+    "REPLACE_EXPRESSION",
+    "REPLACE_CONSTRUCT",
+    "WRAP_WITH_TRY_CATCH",
+    "CONVERT_CALLBACK_TO_ASYNC",
+
+    # Deprecation & Removal Handlings
+    "DEPRECATION_REMOVAL",
+    "REPLACE_DEPRECATED_API",
+    "NO_OP"
+]
 
 class AppliedRuleMapping(BaseModel):
     rule_id: int = Field(
-        ...,
+        default=-1,
         description="The unique numerical ID of the migration rule that was applied."
     )
+    operations: List[RefactoringOperation] = Field(
+        default_factory=lambda: ["RENAME_SYMBOL"],
+        description="The list of refactoring operations performed by this rule."
+    )
     input_snippet: str = Field(
-        ...,
+        default="",
         description="The exact snippet or line from the legacy source code affected by this rule."
     )
     output_snippet: str = Field(
-        ...,
+        default="",
         description="The exact transformed snippet or line generated in the migrated code by this rule."
     )
 
 
 class MigrationOutputSchema(BaseModel):
     migrated_code: str = Field(
-        ..., 
+        default="", 
         description="The complete, valid, executable refactored code without markdown code block fences."
     )
     applied_rules: List[AppliedRuleMapping] = Field(
