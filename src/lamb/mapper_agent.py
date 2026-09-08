@@ -354,17 +354,17 @@ class MapperAgent:
         self.resolver_batch_size = resolver_batch_size
         self.discovery_batch_size = discovery_batch_size
 
-        self.tmp_dir = Path(tmp_dir) if tmp_dir else None
+        self.tmp_dir = Path(tmp_dir).expanduser() if tmp_dir else None
 
         if self.tmp_dir:
             self.tmp_dir.mkdir(exist_ok=True, parents=True)
 
-        self.output_dir = Path(stage_output_dir) if stage_output_dir else None
+        self.output_dir = Path(stage_output_dir).expanduser() if stage_output_dir else None
 
         if self.output_dir:
             self.output_dir.mkdir(exist_ok=True, parents=True)
 
-        db_file = Path(database_path)
+        db_file = Path(database_path).expanduser()
 
         db_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -793,7 +793,7 @@ class MapperAgent:
         if self.tmp_dir and isinstance(self.tmp_dir, Path):
             cache_dir = self.tmp_dir / str(run_id)
         else:
-            cache_dir = Path("~/.lamb/tmp") / str(run_id)
+            cache_dir = Path("~/.lamb/tmp").expanduser() / str(run_id)
 
         sanitized_v1_dir = cache_dir / "v1"
         sanitized_v2_dir = cache_dir / "v2"
