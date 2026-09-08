@@ -1,3 +1,4 @@
+import json
 import toml
 from pathlib import Path
 from typing import Any
@@ -32,12 +33,22 @@ class ConfigManager:
             current = current.setdefault(key, {})
 
         if isinstance(value, str):
-            if value.lower() == 'true':
+            trimmed = value.strip()
+
+            if trimmed.lower() == 'true':
                 value = True
-            elif value.lower() == 'false':
+            elif trimmed.lower() == 'false':
                 value = False
-            elif value.isdigit():
+            elif trimmed.isdigit():
                 value = int(value)
+            else:
+                try:
+                    value = float(trimmed)
+                except ValueError:
+                    try:
+                        value = json.loads(trimmed)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
 
         current[keys[-1]] = value
 
