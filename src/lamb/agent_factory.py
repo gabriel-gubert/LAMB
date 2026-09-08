@@ -1,11 +1,54 @@
-from typing import TypeVar, Type
+from typing import Any, TypeVar, Type
 
 from .config_manager import ConfigManager
 from .mapper_agent import MapperAgent
 from .migrator_agent import MigratorAgent
 from .rate_limited_chat import RateLimitedChatOpenAI, RateLimitedOpenAIEmbeddings
 
+try:
+    from pydantic import TypeAdapter
+
+    PYDANTIC_V2 = True
+except ImportError:
+    from pydantic.tools import parse_raw_as
+
+    PYDANTIC_V2 = False
+
 T = TypeVar('T') 
+
+def _convert_value_for_field(val: Any, expected_type: Any) -> Any:
+    """Converts raw string inputs into complex Pydantic field types using Pydantic's coercion engine."""
+
+    if val is None or expected_type is Any:
+        return val
+
+    if isinstance(val, str):
+        trimmed = val.strip()
+
+        try:
+            if PYDANTIC_V2:
+                return TypeAdapter(expected_type).validate_json(trimmed)
+            else:
+                return parse_raw_as(expected_type, trimmed)
+        except Exception:
+            pass
+
+        try:
+            if PYDANTIC_V2:
+                return TypeAdapter(expected_type).validate_python(trimmed)
+            else:
+                return parse_raw_as(expected_type, trimmed)
+        except Exception:
+            pass
+
+    try:
+        if PYDANTIC_V2:
+            return TypeAdapter(expected_type).validate_python(val)
+        else:
+            return parse_raw_as(expected_type, val)
+    except Exception:
+        return val
+
 
 def create_openai_component(
     component_class: Type[T],
@@ -59,41 +102,30 @@ def create_openai_component(
         if settings.get("base_url") and not settings.get("api_key"):
             settings["api_key"] = "vllm-local-endpoint"
 
-    valid_keys = set()
+    valid_keys = {}
 
     try:
         for name, field in component_class.model_fields.items():
-            valid_keys.add(name)
+            valid_keys[name] = field.annotation
 
             if field.alias:
-                valid_keys.add(field.alias)
-
-            val_alias = getattr(field, 'validation_alias', None)
-
-            if isinstance(val_alias, str):
-                valid_keys.add(val_alias)
-            elif hasattr(val_alias, 'choices'):
-                for choice in val_alias.choices:
-                    if isinstance(choice, str):
-                        valid_keys.add(choice)
-                    elif isinstance(choice, list) and choice and isinstance(choice[0], str):
-                        valid_keys.add(choice[0])
+                valid_keys[field.alias] = field.annotation
     except AttributeError:
         for name, field in component_class.__fields__.items():
-            valid_keys.add(name)
+            valid_keys[name] = field.outer_type_
 
             if field.alias:
-                valid_keys.add(field.alias)
+                valid_keys[field.alias] = field.outer_type_
 
-    kwargs = {
-        k: v for k, v in settings.items()
-        if v is not None and k in valid_keys
-    }
+    kwargs = {}
 
-    if "model_kwargs" in settings and "model_kwargs" in valid_keys:
-        kwargs["model_kwargs"] = settings["model_kwargs"]
+    for k, v in settings.items():
+        if v is not None and k in valid_keys:
+            expected_type = valid_keys[k]
+            kwargs[k] = _convert_value_for_field(v, expected_type)
 
     return component_class(**kwargs)
+
 
 def migrator_agent(config_manager: ConfigManager) -> MigratorAgent:
     """

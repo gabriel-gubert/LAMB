@@ -21,7 +21,7 @@ class ConfigManager:
 
 
     def _parse_primitive_value(self, value: Any) -> Any:
-        """Parses raw string inputs into typed booleans, numbers, or JSON structures."""
+        """Parses raw string inputs into typed booleans or numbers."""
 
         if not isinstance(value, str):
             return value
@@ -38,12 +38,7 @@ class ConfigManager:
         try:
             return float(trimmed)
         except ValueError:
-            try:
-                parsed = json.loads(trimmed)
-                if isinstance(parsed, (dict, list)):
-                    return parsed
-            except (json.JSONDecodeError, TypeError):
-                pass
+            pass
 
         return value
 
