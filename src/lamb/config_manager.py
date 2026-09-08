@@ -20,6 +20,34 @@ class ConfigManager:
         self.local_path.touch(exist_ok=True)
 
 
+    def _parse_primitive_value(self, value: Any) -> Any:
+        """Parses raw string inputs into typed booleans, numbers, or JSON structures."""
+
+        if not isinstance(value, str):
+            return value
+
+        trimmed = value.strip()
+
+        if trimmed.lower() == 'true':
+            return True
+        elif trimmed.lower() == 'false':
+            return False
+        elif trimmed.isdigit():
+            return int(trimmed)
+
+        try:
+            return float(trimmed)
+        except ValueError:
+            try:
+                parsed = json.loads(trimmed)
+                if isinstance(parsed, (dict, list)):
+                    return parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        return value
+
+
     def apply_override(self, key_path: str, value: Any):
         """
         In-memory override of a configuration value. 
@@ -32,35 +60,19 @@ class ConfigManager:
         for key in keys[:-1]:
             current = current.setdefault(key, {})
 
-        if isinstance(value, str):
-            trimmed = value.strip()
-
-            if trimmed.lower() == 'true':
-                value = True
-            elif trimmed.lower() == 'false':
-                value = False
-            elif trimmed.isdigit():
-                value = int(value)
-            else:
-                try:
-                    value = float(trimmed)
-                except ValueError:
-                    try:
-                        value = json.loads(trimmed)
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-
-        current[keys[-1]] = value
+        current[keys[-1]] = self._parse_primitive_value(value)
 
 
     def _deep_merge(self, base: dict, local: dict) -> dict:
         """Recursively merges local dict into base dict."""
 
         for key, value in local.items():
-            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
-                self._deep_merge(base[key], value)
+            parsed_val = self._parse_primitive_value(value)
+
+            if key in base and isinstance(base[key], dict) and isinstance(parsed_val, dict):
+                self._deep_merge(base[key], parsed_val)
             else:
-                base[key] = value
+                base[key] = parsed_val
 
         return base
 
@@ -72,7 +84,8 @@ class ConfigManager:
 
         # Load Global (~/.lamb/config.toml)
         if self.global_path.exists():
-            combined.update(toml.load(self.global_path))
+            global_cfg = toml.load(self.global_path)
+            combined = self._deep_merge(combined, global_cfg)
 
         # Load Local (./.lambconfig.toml)
         if self.local_path.exists():
