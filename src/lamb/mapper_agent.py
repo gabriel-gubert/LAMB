@@ -9,10 +9,11 @@ import sys
 import yaml
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
-from difflib import SequenceMatcher
 from functools import partial
 from pathlib import Path
 from typing import List, Dict, TypedDict, Any, Optional, Tuple, Set
+
+import faiss
 
 import numpy as np
 
@@ -24,10 +25,17 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain_core.document_loaders.blob_loaders import Blob
 from langchain_community.document_loaders.parsers import LanguageParser
 from langchain_text_splitters import (
-    Language,
     RecursiveCharacterTextSplitter,
-    MarkdownHeaderTextSplitter,
+    MarkdownHeaderTextSplitter
 )
+
+from rapidfuzz.process import cdist
+from rapidfuzz.distance import Levenshtein
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+from tqdm import tqdm
 
 import tree_sitter_html as tshtml
 from tree_sitter import Language, Parser
@@ -66,8 +74,8 @@ try:
 
     with config_file.open("r", encoding="utf-8") as conf_f:
         LINGUIST_CONFIG = yaml.safe_load(conf_f)
-except Exception as e:
-    log_error(f"Failed Loading \"languages.yaml\": {e}")
+except Exception as E:
+    log_error(f"Failed Loading \"languages.yaml\": {E}")
 
     LINGUIST_CONFIG = {}
 
@@ -116,7 +124,9 @@ def _calculate_file_strategy(file_path: str) -> dict:
                 "chunk_size": 120000,
                 "chunk_overlap": 8000
             }
-    except Exception:
+    except Exception as E:
+        log_error(f"Calculation of Chunking Strategy Failed for Artifact at {file_path}: {E}")
+
         return {"chunk_size": 4000, "chunk_overlap": 400, "batch_grouping": False, "tier": ""}
 
 
@@ -140,29 +150,98 @@ def _is_strictly_tree_sitter_html(content: str) -> bool:
         has_elements = any(child.type in ("element", "tag", "doctype") for child in root_node.children)
 
         return has_elements
+    except Exception as E:
+        log_error(f"Tree-sitter Parser Failed: {E}")
+
+
+def _detect_linguist_type(ext: str) -> str:
+    """Helper: Queries LINGUIST_CONFIG once to determine file type ('programming', 'markup', or 'prose')."""
+
+    ext_clean = f".{ext.lstrip('.').lower()}"
+
+    for _, properties in LINGUIST_CONFIG.items():
+        if "extensions" in properties and ext_clean in properties["extensions"]:
+            return properties.get("type", "prose").lower()
+
+    return "prose"
+
+
+def _normalize_text(file_path: Optional[str] = None, content: Optional[str] = None, ext: str = ".txt") -> str:
+    """Normalizes document content prior to scanning and chunking."""
+
+    if file_path:
+        p = Path(file_path)
+        ext = p.suffix.lower()
+
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+    elif content is None:
+        return ""
+
+    detected_type = _detect_linguist_type(ext)
+
+    if detected_type != "markup":
+        return content
+
+    is_html = False
+
+    try:
+        is_html = _is_strictly_tree_sitter_html(content)
     except Exception:
-        raise RuntimeError(f"[X] Tree-sitter Parser Failed: {e}")
+        is_html = bool(re.search(r'</?\s*[a-zA-Z][^>]*>', content))
+
+    return md(content) if is_html else content
 
 
-def _split_file(file_path: str = None, content: str = None, ext: str = ".txt", chunk_size: int = 4000, chunk_overlap: int = 400) -> List[str]:
-    """Determines splitting logic using the Linguist YAML 'type' field, accepting either a file path or direct string content."""
+def _normalize_single_artifact(args: Tuple[str, Path]) -> Tuple[Optional[Tuple[str, str, str]], Counter, Optional[str]]:
+    """Reads and normalizes text, returns cache item, counts, and direct sanitized paths."""
+
+    file_path, target_dir = args
+
+    try:
+        path = Path(file_path)
+        ext = path.suffix.lower()
+        raw_content = path.read_text(encoding="utf-8", errors="ignore")
+
+        if _detect_linguist_type(ext) == "programming":
+            out_path = target_dir / path.name
+            out_path.write_text(raw_content, encoding="utf-8")
+
+            return None, Counter(), str(out_path)
+
+        clean_content = _normalize_text(content=raw_content, ext=ext)
+        cache_item = (file_path, ext, clean_content)
+
+        scanner = RecursiveCharacterTextSplitter(chunk_size=150, chunk_overlap=0)
+        blocks = {c.strip() for c in scanner.split_text(clean_content) if len(c.strip()) >= 30}
+        
+        return cache_item, Counter(blocks), None
+    except Exception as E:
+        log_error(f"Sanitization Failed for Artifact at {file_path}: {E}")
+
+        return None, Counter(), None
+
+
+def _split_file(
+    file_path: Optional[str] = None, 
+    content: Optional[str] = None, 
+    ext: str = ".txt", 
+    chunk_size: int = 4000, 
+    chunk_overlap: int = 400
+) -> List[str]:
+    """Single source of truth for structural file chunking."""
 
     if file_path:
         path = Path(file_path)
         ext = path.suffix.lower()
 
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
     elif content is None:
         return []
 
-    detected_type = "prose"
-
-    for _, properties in LINGUIST_CONFIG.items():
-        if "extensions" in properties and ext in properties["extensions"]:
-            detected_type = properties.get("type", "prose").lower()
-
-            break
+    normalized_content = _normalize_text(content=content, ext=ext)
+    detected_type = _detect_linguist_type(ext)
 
     recursive_char_splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
@@ -172,38 +251,16 @@ def _split_file(file_path: str = None, content: str = None, ext: str = ".txt", c
     if detected_type == "programming":
         try:
             parser = LanguageParser()
-            blob = Blob.from_data(content, path=file_path or f"filename{ext}")
+            blob = Blob.from_data(normalized_content, path=file_path or f"filename{ext}")
             ast_docs = parser.lazy_parse(blob)
             final_docs = recursive_char_splitter.split_documents(ast_docs)
 
             return [doc.page_content for doc in final_docs]
         except Exception as E:
-            if file_path:
-                log_error(f"Failed Splitting Content from File at \"{file_path}\". Falling Back to Recursive Character Splitter: {E}")
-            else:
-                log_error(f"Failed Splitting Content. Falling Back to Recursive Character Splitter: {E}")
-
-    if detected_type == "markup":
+            loc = f'from Artifact at "{file_path}"' if file_path else "Content"
+            log_error(f"Failed Splitting {loc}. Falling Back to Recursive Character Splitter: {E}")
+    elif detected_type == "markup":
         try:
-            try:
-                is_html = _is_strictly_tree_sitter_html(content)
-            except Exception as E:
-                if file_path:
-                    log_error(f"Tree-sitter Failed for {file_path}. Falling Back to RegEx HTML Detection: {E}")
-                else:
-                    log_error(f"Tree-sitter Failed: {E}. Falling Back to RegEx HTML Detection: {E}")
-
-                is_html = bool(re.search(r'</?\s*[a-zA-Z][^>]*>', content))
-
-            is_markdown = bool(re.search(r'(?m)^(?:#{1,6}\s+.+|(?:={3,}|-{3,})$)', content))
-
-            assert(is_html or is_markdown), f"[X] Content from File at \"{file_path}\" is neither HTML nor Markdown." if file_path else f"[X] Content is neither HTML nor Markdown."
-
-            if is_html:
-                markdown_content = md(content)
-            else:
-                markdown_content = content
-
             md_header_splitter = MarkdownHeaderTextSplitter(
                 headers_to_split_on=[
                     ("#", "Header 1"),
@@ -212,17 +269,15 @@ def _split_file(file_path: str = None, content: str = None, ext: str = ".txt", c
                 ]
             )
 
-            structural_docs = md_header_splitter.split_text(markdown_content)
+            structural_docs = md_header_splitter.split_text(normalized_content)
             final_docs = recursive_char_splitter.split_documents(structural_docs)
 
             return [doc.page_content for doc in final_docs]
         except Exception as E:
-            if file_path:
-                log_error(f"Failed Splitting Content from File at \"{file_path}\". Falling Back to Recursive Character Splitter: {E}")
-            else:
-                log_error(f"Failed Splitting Content. Falling Back to Recursive Character Splitter: {E}")
+            loc = f'from Artifact at "{file_path}"' if file_path else "Content"
+            log_error(f"Failed Splitting {loc}. Falling Back to Recursive Character Splitter: {E}")
 
-    return recursive_char_splitter.split_text(content)
+    return recursive_char_splitter.split_text(normalized_content)
 
 
 def _process_single_file_split(file_path: str, version: str) -> list[dict]:
@@ -325,11 +380,14 @@ class MapperAgent:
             multi_agent: bool = False,
             discovery_batch_size: int = 20,
             resolver_batch_size: int = 20,
-            verbose: bool = False,
             stage_output_dir: Optional[str | Path] = None,
+            tmp_dir: str = "~/.lamb/tmp",
+            with_checkpoint: bool = False,
             database_path: str = "~/.lamb/map_checkpoint.db",
-            tmp_dir: str = "~/.lamb/tmp"
+            verbose: bool = False,
         ):
+        self.graph = None
+
         self._discoverer = discoverer.with_structured_output(DirectoryDiscovery).with_retry(stop_after_attempt=2)
         self._extractor = extractor.with_structured_output(ElementsExtraction).with_retry(stop_after_attempt=2)
         self._embedder = embedder
@@ -364,13 +422,11 @@ class MapperAgent:
         if self.output_dir:
             self.output_dir.mkdir(exist_ok=True, parents=True)
 
-        db_file = Path(database_path).expanduser()
+        self.db_file = Path(database_path).expanduser() if database_path else Path("~/.lamb/map_checkpoint.db").expanduser()
 
-        db_file.parent.mkdir(parents=True, exist_ok=True)
+        if self.db_file:
+            self.db_file.parent.mkdir(parents=True, exist_ok=True)
 
-        self.db_conn = sqlite3.connect(str(db_file), check_same_thread=False)
-        self.memory = SqliteSaver(self.db_conn)
-        self.graph = self._build_graph()
         self.valid_extensions = self._load_valid_extensions()
 
 
@@ -393,11 +449,13 @@ class MapperAgent:
                 log_error(f"Failed Saving to \"{output_path}\": {e}")
 
 
-    def _build_graph(self) -> StateGraph:
+    def build_graph(self, with_checkpoint: bool = False) -> StateGraph:
         """Constructs and compiles the LangGraph state machine with full crash resilience,
         incorporating file-by-file processing, a standalone chunk deduplication node, 
         and a chunk-by-chunk LLM information extraction loop.
         """
+
+        log_info("Building LangGraph...")
 
         workflow = StateGraph(MapperAgentState)
 
@@ -540,7 +598,13 @@ class MapperAgent:
             )
             workflow.add_edge("map_single_finalize", END)
 
-        return workflow.compile(checkpointer=self.memory)
+        if with_checkpoint:
+            db_conn = sqlite3.connect(str(self.db_file), check_same_thread=False)
+            memory = SqliteSaver(db_conn)
+
+            return workflow.compile(checkpointer=memory)
+
+        return workflow.compile()
 
     @staticmethod
     def _is_text_file(filepath: Path) -> bool:
@@ -767,12 +831,12 @@ class MapperAgent:
             print(f"    -> Found {len(state.get('files_v1', []))} Artifact(s) in V1 and {len(state.get('files_v2', []))} Artifact(s) in V2.", file=sys.stderr)
             # print_agent_state(result)
 
-        return "prep_chunking"
+        return "prep_sanitization"
 
 
     def _prepare_sanitization_queues(self, state: MapperAgentState) -> dict:
         if self.verbose:
-            log_info(f"Running Artifact(s) Boilerplate Removal...")
+            log_info(f"Removing Boilerplate/Redundant/Duplicated Text from Artifact(s)...")
 
         return {
             "files_v1": [],
@@ -784,7 +848,61 @@ class MapperAgent:
         }
 
 
+    def _sanitize_queue(self, queue: List[str], target_dir: Path, version_label: str) -> List[str]:
+        if self.verbose:
+            log_info(f"Removing Boilerplate from {version_label} Artifact(s)...")
+
+        counts = Counter()
+        cache: List[Tuple[str, str, str]] = []
+        sanitized_files = []
+
+        try:
+            max_workers = len(os.sched_getaffinity(0))
+        except AttributeError:
+            max_workers = os.cpu_count() or 1
+
+        max_workers = max(1, max_workers)
+
+        tasks = [(fp, target_dir) for fp in queue]
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_normalize_single_artifact, task) for task in tasks]
+            for f in tqdm(futures, desc="Normalizing Artifact(s)", unit="artifact"):
+                cache_item, local_counts, direct_out = f.result()
+                if direct_out:
+                    sanitized_files.append(direct_out)
+                if cache_item:
+                    cache.append(cache_item)
+                    counts.update(local_counts)
+
+        bp_list = [block for block, count in counts.items() if count >= 3]
+        seen_bp = set()
+
+        # Phase 2: Sequential Boilerplate Removal & Writing
+        for file_path, ext, content in tqdm(cache, desc="Sanitizing Artifact(s)", unit="artifact"):
+            for bp in bp_list:
+                if bp in content:
+                    if bp in seen_bp:
+                        content = content.replace(bp, "")
+                    else:
+                        seen_bp.add(bp)
+                        parts = content.split(bp)
+                        content = parts[0] + bp + "".join(parts[1:])
+
+            content = re.sub(r'[ \t]+$', '', content, flags=re.MULTILINE)
+            content = re.sub(r'\n{3,}', '\n\n', content).strip()
+
+            is_html = ext in [".html", ".htm"]
+            out_name = Path(file_path).stem + ".md" if is_html else Path(file_path).name
+            out_path = target_dir / out_name
+
+            out_path.write_text(content, encoding="utf-8")
+            sanitized_files.append(str(out_path))
+
+        return sanitized_files
+
+
     def _sanitize_files(self, state: MapperAgentState) -> Dict[str, Any]:
+        """Main node method: delegates v1 and v2 queue sanitization to _sanitize_queue."""
         v1_queue = list(state.get("files_v1_queue", []))
         v2_queue = list(state.get("files_v2_queue", []))
 
@@ -804,98 +922,10 @@ class MapperAgent:
         result = {}
 
         if v1_queue:
-            if self.verbose:
-                log_info("Removing Boilerplate from V1 Artifact(s)...")
-
-            counts = Counter()
-            v1_cache = []
-
-            for file_path in v1_queue:
-                try:
-                    path = Path(file_path)
-                    content = path.read_text(encoding="utf-8")
-
-                    v1_cache.append((file_path, content))
-
-                    ext = path.suffix.lstrip(".").lower()
-                    matched_lang = next((lang for lang in Language if lang.value.lower() == ext or lang.name.lower() == ext), None)
-                    scanner = RecursiveCharacterTextSplitter.from_language(language=matched_lang) if matched_lang else RecursiveCharacterTextSplitter(chunk_size=150, chunk_overlap=0)
-
-                    blocks = {c.strip() for c in scanner.split_text(content) if len(c.strip()) >= 30}
-
-                    counts.update(blocks)
-                except Exception:
-                    continue
-
-            bp_v1 = [block for block, count in counts.items() if count >= 3]
-
-            sanitized_files_v1 = []
-            seen_bp = set()
-
-            for file_path, content in v1_cache:
-                for bp in bp_v1:
-                    if bp in content:
-                        if bp in seen_bp:
-                            content = content.replace(bp, "")
-                        else:
-                            seen_bp.add(bp)
-
-                            parts = content.split(bp)
-                            content = parts[0] + bp + "".join(parts[1:])
-
-                out_path = sanitized_v1_dir / Path(file_path).name
-
-                out_path.write_text(content, encoding="utf-8")
-                sanitized_files_v1.append(str(out_path))
-
-            result["sanitized_files_v1"] = sanitized_files_v1
+            result["sanitized_files_v1"] = self._sanitize_queue(v1_queue, sanitized_v1_dir, "V1")
 
         if v2_queue:
-            if self.verbose:
-                log_info("Removing Boilerplate from V2 Artifact(s)...")
-
-            counts = Counter()
-            v2_cache = []
-
-            for file_path in v2_queue:
-                try:
-                    path = Path(file_path)
-                    content = path.read_text(encoding="utf-8")
-
-                    v2_cache.append((file_path, content))
-
-                    ext = path.suffix.lstrip(".").lower()
-                    matched_lang = next((lang for lang in Language if lang.value.lower() == ext or lang.name.lower() == ext), None)
-                    scanner = RecursiveCharacterTextSplitter.from_language(language=matched_lang, chunk_size=150, chunk_overlap=0) if matched_lang else RecursiveCharacterTextSplitter(chunk_size=150, chunk_overlap=0)
-
-                    blocks = {c.strip() for c in scanner.split_text(content) if len(c.strip()) >= 30}
-
-                    counts.update(blocks)
-                except Exception:
-                    continue
-
-            bp_v2 = [block for block, count in counts.items() if count >= 3]
-
-            sanitized_files_v2 = []
-            seen_bp = set()
-
-            for file_path, content in v2_cache:
-                for bp in bp_v2:
-                    if bp in content:
-                        if bp in seen_bp:
-                            content = content.replace(bp, "")
-                        else:
-                            seen_bp.add(bp)
-
-                            parts = content.split(bp)
-                            content = parts[0] + bp + "".join(parts[1:])
-
-                out_path = sanitized_v2_dir / Path(file_path).name
-
-                out_path.write_text(content, encoding="utf-8")
-                sanitized_files_v2.append(str(out_path))
-
-            result["sanitized_files_v2"] = sanitized_files_v2
+            result["sanitized_files_v2"] = self._sanitize_queue(v2_queue, sanitized_v2_dir, "V2")
 
         return result
 
@@ -915,6 +945,7 @@ class MapperAgent:
             "sanitized_files_v2_queue": list(state.get("sanitized_files_v2", [])),
             "raw_chunks_buffer": []
         }
+
 
     def _chunk_files(self, state: MapperAgentState) -> Dict[str, Any]:
         """Pops a batch of files, processes them in parallel across multiple 
@@ -976,6 +1007,7 @@ class MapperAgent:
 
         return result
 
+
     def _should_continue_chunking(self, state: MapperAgentState) -> str:
         """Controls the routing loop processing files into raw chunks."""
 
@@ -986,6 +1018,7 @@ class MapperAgent:
             log_info(f"Split Artifact(s) in {len(state.get("raw_chunks_buffer", []))} Total Chunk(s).")
 
         return "prep_chunk_dedup_queue"
+
 
     def _prepare_chunk_deduplication_queue(self, state: MapperAgentState) -> dict:
         """Runs once after file chunking completes to safely copy raw data blocks
@@ -1000,6 +1033,7 @@ class MapperAgent:
             "deduplication_queue": list(state.get("raw_chunks_buffer", [])),
             "chunk_registry": {}
         }
+
 
     def _deduplicate_chunks(self, state: MapperAgentState) -> dict:
         """Pops a batch of items from the queue, processes them in parallel 
@@ -1045,6 +1079,7 @@ class MapperAgent:
             "chunk_registry": chunk_registry
         }
 
+
     def _should_continue_deduplication(self, state: MapperAgentState) -> str:
         """Evaluates if elements remain inside the dedicated loop queue tracker."""
 
@@ -1055,6 +1090,7 @@ class MapperAgent:
             log_info(f"Found {len(state.get("chunk_registry", {}).keys())} Total Unique Chunk(s).")
 
         return "prep_extraction"
+
 
     def _prepare_extraction_queues(self, state: MapperAgentState) -> dict:
         """Greedily aggregates separate unique chunks into maximized token-limit payloads 
@@ -1114,6 +1150,7 @@ class MapperAgent:
             "extracted_v2": []
         }
 
+
     def _extract_step(self, state: MapperAgentState) -> dict:
         """Invokes the extraction LLM on a batch of packed, multi-chunk optimized 
         payload context blocks sequentially before saving a checkpoint.
@@ -1172,6 +1209,7 @@ class MapperAgent:
                 "extracted_v2": active_extracted
             }
 
+
     def _should_continue_extraction(self, state: MapperAgentState) -> str:
         """Conditional router checking if files are left to process."""
 
@@ -1182,6 +1220,7 @@ class MapperAgent:
             log_info(f"Found {len(state.get("extracted_v1", []))} API Element(s) for V1 and {len(state.get("extracted_v2", []))} API Element(s) for V2.")
 
         return "deduplicate_elements"
+
 
     def _deduplicate_elements(self, state: MapperAgentState) -> dict:
         """Dedicated node that executes once all elements are extracted to deduplicate globally."""
@@ -1217,154 +1256,353 @@ class MapperAgent:
 
         return result
 
-    def _levenshtein_similarity(self, s1: str, s2: str) -> float:
-        """Returns a normalized similarity score between 0.0 and 1.0 using sequence matching."""
 
-        if not s1 and not s2:
-            return 1.0
+    @staticmethod
+    def _tokenize(text: str) -> str:
+        """Splits camelCase, snake_case, and dot paths into space-separated tokens."""
 
-        return SequenceMatcher(None, s1, s2).ratio()
+        if not text:
+            return ""
 
-    def _compute_similarity_matrix(self, v1_elements: List[dict], v2_elements: List[dict]) -> np.ndarray:
-        if self.verbose:
-            print("    -> Generating Semantic Similarity Matrix (Embeddings)...", file=sys.stderr)
+        s1 = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', text)
+        s2 = re.sub(r'[^a-zA-Z0-9]', ' ', s1)
 
-        v1_summaries = [el.get('summary', '') for el in v1_elements]
-        v2_summaries = [el.get('summary', '') for el in v2_elements]
-        v1_signatures = [el.get('signature', '') for el in v1_elements]
-        v2_signatures = [el.get('signature', '') for el in v2_elements]
+        return s2.lower().strip()
 
-        # Summary Embeddings Matrix
-        v1_sum_embs = np.array(self._embedder.embed_documents(v1_summaries))
-        v2_sum_embs = np.array(self._embedder.embed_documents(v2_summaries))
-        v1_sum_norm = np.where(np.linalg.norm(v1_sum_embs, axis=1, keepdims=True) == 0, 1, np.linalg.norm(v1_sum_embs, axis=1, keepdims=True))
-        v2_sum_norm = np.where(np.linalg.norm(v2_sum_embs, axis=1, keepdims=True) == 0, 1, np.linalg.norm(v2_sum_embs, axis=1, keepdims=True))
-        summary_matrix = np.dot(v1_sum_embs / v1_sum_norm, (v2_sum_embs / v2_sum_norm).T)
 
-        # Full Signature Embeddings Matrix
-        v1_sig_embs = np.array(self._embedder.embed_documents(v1_signatures))
-        v2_sig_embs = np.array(self._embedder.embed_documents(v2_signatures))
-        v1_sig_norm = np.where(np.linalg.norm(v1_sig_embs, axis=1, keepdims=True) == 0, 1, np.linalg.norm(v1_sig_embs, axis=1, keepdims=True))
-        v2_sig_norm = np.where(np.linalg.norm(v2_sig_embs, axis=1, keepdims=True) == 0, 1, np.linalg.norm(v2_sig_embs, axis=1, keepdims=True))
-        signature_matrix = np.dot(v1_sig_embs / v1_sig_norm, (v2_sig_embs / v2_sig_norm).T)
+    def _compute_lexical_signal_matrix(self, v1_strings: List[str], v2_strings: List[str]) -> np.ndarray:
+        """Computes a composite lexical similarity matrix (sub-token Jaccard + RapidFuzz C-cdist)."""
 
-        n_v1, n_v2 = len(v1_elements), len(v2_elements)
-        final_sim_matrix = np.zeros((n_v1, n_v2))
+        n_v1, n_v2 = len(v1_strings), len(v2_strings)
 
-        EPSILON = 1e-6
+        if n_v1 == 0 or n_v2 == 0:
+            return np.zeros((n_v1, n_v2), dtype=np.float32)
 
-        for i in range(n_v1):
-            el1 = v1_elements[i]
-            id1 = ".".join([el1.get(k, '') for k in ['namespace', 'class_or_interface', 'member'] if el1.get(k)])
+        # 1. RapidFuzz C-accelerated Levenshtein Distance Matrix
+        dist_matrix = cdist(v1_strings, v2_strings, scorer=Levenshtein.distance, score_cutoff=None)
+        max_lens = np.maximum.outer([len(s) for s in v1_strings], [len(s) for s in v2_strings])
+        max_lens = np.maximum(1, max_lens)
+        char_sim_matrix = 1.0 - (dist_matrix / max_lens)
 
-            for j in range(n_v2):
-                el2 = v2_elements[j]
-                id2 = ".".join([el2.get(k, '') for k in ['namespace', 'class_or_interface', 'member'] if el2.get(k)])
+        # 2. Sub-token Overlap Matrix
+        v1_tok_sets = [set(self._tokenize(s).split()) for s in v1_strings]
+        v2_tok_sets = [set(self._tokenize(s).split()) for s in v2_strings]
 
-                # Extract basic raw metrics
-                struct_score = self._levenshtein_similarity(id1, id2)
-                sig_semantic_score = signature_matrix[i, j]
-                sum_semantic_score = summary_matrix[i, j]
+        token_sim_matrix = np.zeros((n_v1, n_v2), dtype=np.float32)
 
-                # 1. Primary Weight: Function of structural identity score
-                # Squaring it ensures high scores scale up faster than poor ones
-                w_id = (struct_score ** 2) * 0.60
+        for i, set1 in enumerate(v1_tok_sets):
+            if not set1:
+                continue
 
-                # Calculate remaining space pool left over
-                pool_remaining = 1.0 - w_id
+            for j, set2 in enumerate(v2_tok_sets):
+                if not set2:
+                    continue
 
-                # 2. Secondary Weight: Function of signature strength vs summary strength inside the pool
-                sig_ratio = (sig_semantic_score + EPSILON) / (sig_semantic_score + sum_semantic_score + (2 * EPSILON))
-                w_sig = pool_remaining * sig_ratio
+                token_sim_matrix[i, j] = len(set1 & set2) / float(len(set1 | set2))
 
-                # 3. Tertiary Weight: Absolute remainder to maintain 1.0 unity summation
-                w_sum = pool_remaining - w_sig
+        sim_matrix = np.maximum(token_sim_matrix, char_sim_matrix)
 
-                # Synthesize final score using the continuously adapted weights
-                final_sim_matrix[i, j] = (w_id * struct_score) + (w_sig * sig_semantic_score) + (w_sum * sum_semantic_score)
+        # 3. Presence Logic (e.g., both elements are top-level constructs without a class)
+        v1_has = np.array([bool(s) for s in v1_strings])
+        v2_has = np.array([bool(s) for s in v2_strings])
 
-        return final_sim_matrix
+        both_empty = np.outer(~v1_has, ~v2_has)
+        one_empty = np.outer(v1_has, ~v2_has) | np.outer(~v1_has, v2_has)
 
-    def _convert_sim_matrix_to_json(self, sim_matrix, v1_elements, v2_elements):
-        # Output tracking map json construction
-        sim_matrix_json = {}
+        sim_matrix[both_empty] = 1.0
+        sim_matrix[one_empty] = 0.0
 
-        for i, el1 in enumerate(v1_elements):
-            v1_key = ".".join([el1.get(k) for k in ['namespace', 'class_or_interface', 'member'] if el1.get(k)])
-            sim_matrix_json[v1_key] = {}
+        return sim_matrix.astype(np.float32)
 
-            for j, el2 in enumerate(v2_elements):
-                v2_key = ".".join([el2.get(k) for k in ['namespace', 'class_or_interface', 'member'] if el2.get(k)])
-                sim_matrix_json[v1_key][v2_key] = sim_matrix[i, j].item()
 
-        return sim_matrix_json
+    def _compute_namespace_signal_matrix(self, v1_namespaces: List[str], v2_namespaces: List[str]) -> np.ndarray:
+        """Computes tokenized sequence alignment overlap matrix for hierarchical namespaces."""
 
-    def _compute_modified_z_matrix(self, sim_matrix: np.ndarray) -> Tuple[np.ndarray, float, float]:
+        n_v1, n_v2 = len(v1_namespaces), len(v2_namespaces)
+
+        if n_v1 == 0 or n_v2 == 0:
+            return np.zeros((n_v1, n_v2), dtype=np.float32)
+
+        p1_list = [[p for p in ns.split('.') if p] for ns in v1_namespaces]
+        p2_list = [[p for p in ns.split('.') if p] for ns in v2_namespaces]
+
+        matrix = np.zeros((n_v1, n_v2), dtype=np.float32)
+
+        for i, p1 in enumerate(p1_list):
+            for j, p2 in enumerate(p2_list):
+                if not p1 and not p2:
+                    matrix[i, j] = 1.0
+
+                    continue
+
+                if not p1 or not p2:
+                    matrix[i, j] = 0.0
+
+                    continue
+
+                matcher = Levenshtein.opcodes(p1, p2)
+                matching_tokens = sum(length for tag, _, _, _, length in matcher if tag == 'equal')
+                matrix[i, j] = (2.0 * matching_tokens) / (len(p1) + len(p2))
+
+        return matrix
+
+
+    def _compute_embedding_signal_matrix(self, v1_texts: List[str], v2_texts: List[str]) -> np.ndarray:
+        """Computes cosine similarity matrix for embeddings using scikit-learn."""
+
+        n_v1, n_v2 = len(v1_texts), len(v2_texts)
+
+        if n_v1 == 0 or n_v2 == 0:
+            return np.zeros((n_v1, n_v2), dtype=np.float32)
+
+        v1_embs = np.array(self._embedder.embed_documents(v1_texts), dtype=np.float32)
+        v2_embs = np.array(self._embedder.embed_documents(v2_texts), dtype=np.float32)
+
+        raw_matrix = cosine_similarity(v1_embs, v2_embs)
+
+        return np.maximum(0.0, raw_matrix).astype(np.float32)
+
+
+    @staticmethod
+    def _calculate_row_entropy_weights(tensor_5d: np.ndarray) -> np.ndarray:
+        """Fully vectorized row-wise feature weight allocation based on Shannon entropy."""
+
+        n_v1, n_v2, n_features = tensor_5d.shape
+
+        if n_v2 <= 1:
+            return np.full((n_v1, n_features), 1.0 / n_features, dtype=np.float32)
+
+        col_sums = np.sum(tensor_5d, axis=1, keepdims=True)
+        probs = np.divide(tensor_5d, col_sums, out=np.zeros_like(tensor_5d), where=col_sums > 1e-6)
+
+        # Compute Shannon Entropy
+        log_probs = np.zeros_like(probs)
+        nonzero_mask = probs > 0
+        log_probs[nonzero_mask] = np.log2(probs[nonzero_mask])
+        entropy = -np.sum(probs * log_probs, axis=1)
+
+        max_entropy = np.log2(n_v2)
+        norm_entropy = entropy / max_entropy if max_entropy > 0 else 1.0
+        sharpness = 1.0 - norm_entropy
+
+        sharpness_sums = np.sum(sharpness, axis=1, keepdims=True)
+        uniform_fallback = np.full_like(sharpness, 1.0 / n_features)
+
+        return np.divide(sharpness, sharpness_sums, out=uniform_fallback, where=sharpness_sums > 1e-6)
+
+
+    def _compute_similarity_matrix(
+            self, 
+            v1_elements: List[dict], 
+            v2_elements: List[dict], 
+            candidate_map: Dict[int, List[int]]
+        ) -> np.ndarray:
+            if self.verbose:
+                print("    -> Computing Similarity Matrix...", file=sys.stderr)
+
+            n_v1, n_v2 = len(v1_elements), len(v2_elements)
+
+            if n_v1 == 0 or n_v2 == 0:
+                return np.empty((n_v1, n_v2), dtype=np.float32)
+
+            # 1. Build a Sparse Boolean Candidate Mask from Stage 1 (FAISS + TF-IDF)
+            sparse_mask = np.zeros((n_v1, n_v2), dtype=bool)
+
+            for v1_idx, cand_list in candidate_map.items():
+                if cand_list:
+                    sparse_mask[v1_idx, cand_list] = True
+
+            if not np.any(sparse_mask):
+                return np.zeros((n_v1, n_v2), dtype=np.float32)
+
+            # 2. Extract Lexical Features Signal Matrices
+            s_mem = self._compute_lexical_signal_matrix(
+                [el.get('member', '') for el in v1_elements],
+                [el.get('member', '') for el in v2_elements]
+            )
+            s_cls = self._compute_lexical_signal_matrix(
+                [el.get('class_or_interface', '') for el in v1_elements],
+                [el.get('class_or_interface', '') for el in v2_elements]
+            )
+            s_ns = self._compute_namespace_signal_matrix(
+                [el.get('namespace', '') for el in v1_elements],
+                [el.get('namespace', '') for el in v2_elements]
+            )
+            # 3. Extract Embedding Features Signal Matrices
+            s_sig = self._compute_embedding_signal_matrix(
+                [el.get('signature', '') for el in v1_elements],
+                [el.get('signature', '') for el in v2_elements]
+            )
+            s_sum = self._compute_embedding_signal_matrix(
+                [el.get('summary', '') for el in v1_elements],
+                [el.get('summary', '') for el in v2_elements]
+            )
+
+            self._save_stage_output("similarity_matrix_member", self._convert_sim_matrix_to_json(s_mem, v1_elements, v2_elements))
+            self._save_stage_output("similarity_matrix_object", self._convert_sim_matrix_to_json(s_cls, v1_elements, v2_elements))
+            self._save_stage_output("similarity_matrix_namespace", self._convert_sim_matrix_to_json(s_ns, v1_elements, v2_elements))
+            self._save_stage_output("similarity_matrix_signature", self._convert_sim_matrix_to_json(s_sig, v1_elements, v2_elements))
+            self._save_stage_output("similarity_matrix_summary", self._convert_sim_matrix_to_json(s_sum, v1_elements, v2_elements))
+
+            # 4. Assemble 5D Feature Tensor (shape: N_v1 x N_v2 x 5)
+            tensor_5d = np.stack([s_mem, s_cls, s_ns, s_sig, s_sum], axis=-1)
+
+            # 5. Apply Candidate Retrieval Mask & Hard Gating Mask
+            # Hard Gate: Discard candidate pairs where Member < 0.20 AND Summary < 0.30
+            hard_gate_mask = ~((s_mem < 0.20) & (s_sum < 0.30))
+            effective_mask = sparse_mask & hard_gate_mask
+
+            # Zero out non-candidate / gated entries across all 5 feature dimensions
+            tensor_5d *= effective_mask[:, :, np.newaxis]
+
+            # 6. Calculate Per-Row Dynamic Weights via Shannon Entropy
+            weights = self._calculate_row_entropy_weights(tensor_5d)
+
+            # 7. Compute Uncollapsed Base Similarity Matrix via Vectorized Tensor Multiplication
+            base_sim_matrix = np.einsum('ijf,if->ij', tensor_5d, weights)
+
+            return base_sim_matrix.astype(np.float32)
+
+
+    def _convert_sim_matrix_to_json(self, sim_matrix: np.ndarray, v1_elements: List[dict], v2_elements: List[dict]) -> dict:
+        v1_keys = [".".join([el.get(k, '') for k in ['namespace', 'class_or_interface', 'member'] if el.get(k)]) for el in v1_elements]
+        v2_keys = [".".join([el.get(k, '') for k in ['namespace', 'class_or_interface', 'member'] if el.get(k)]) for el in v2_elements]
+
+        return {
+            v1_keys[i]: {v2_keys[j]: float(sim_matrix[i, j]) for j in range(len(v2_keys))}
+            for i in range(len(v1_keys))
+        }
+
+
+    def _compute_modified_z_matrix(self, sim_matrix: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         n_v1, n_v2 = sim_matrix.shape
 
         if n_v1 == 0 or n_v2 == 0:
-            return np.empty((n_v1, n_v2)), 0.0, 0.10
+            return np.empty((n_v1, n_v2)), np.array([]), np.array([])
 
-        matrix_flat = sim_matrix.flatten()
-        matrix_median = np.median(matrix_flat)
-        abs_deviation = np.abs(matrix_flat - matrix_median)
-        mad = np.median(abs_deviation)
+        row_medians = np.median(sim_matrix, axis=1, keepdims=True)
+        abs_deviations = np.abs(sim_matrix - row_medians)
+        row_mads = np.median(abs_deviations, axis=1, keepdims=True)
 
-        # Protective guardrails to prevent zero-division on low-variance or tiny datasets
-        if mad > 0.02 and matrix_flat.size >= 25:
-            mad_stabilizer = mad
-        else:
-            mad_stabilizer = 0.10
+        mad_stabilizers = np.maximum(row_mads, 0.08) if n_v2 >= 5 else np.full_like(row_mads, fill_value=0.10)
+        z_matrix = (0.6745 * (sim_matrix - row_medians)) / mad_stabilizers
 
-        # Transform raw similarity space into pure statistical outlier scales
-        z_matrix = (0.6745 * (sim_matrix - matrix_median)) / mad_stabilizer
-
-        return z_matrix, matrix_median, mad_stabilizer
+        return z_matrix, row_medians.squeeze(axis=-1), mad_stabilizers.squeeze(axis=-1)
 
 
-    def _initial_semantic_match(self, v1_elements: List[dict], v2_elements: List[dict], z_matrix: np.ndarray) -> Tuple[List[MappingRow], List[dict]]:
-        final_rows: List[MappingRow] = []
+    def _retrieve_candidate_pairs(self, v1_elements: List[dict], v2_elements: List[dict], top_k: int = 30) -> Dict[int, List[int]]:
+        """Stage 1: Prunes search space from N x M down to N x K candidates using TF-IDF and FAISS."""
+
+        n_v1, n_v2 = len(v1_elements), len(v2_elements)
+
+        retrieval_k = min(top_k, n_v2)
+
+        # 1. Lexical Candidate Indexing via Scikit-Learn TF-IDF
+        v2_lexical_docs = [
+            f"{self._tokenize(el.get('member', ''))} "
+            f"{self._tokenize(el.get('class_or_interface', ''))} "
+            f"{self._tokenize(el.get('namespace', ''))}"
+            for el in v2_elements
+        ]
+        
+        tfidf = TfidfVectorizer(token_pattern=r"(?u)\b\w+\b")
+        v2_tfidf_matrix = tfidf.fit_transform(v2_lexical_docs)
+
+        v1_lexical_docs = [
+            f"{self._tokenize(el.get('member', ''))} "
+            f"{self._tokenize(el.get('class_or_interface', ''))} "
+            f"{self._tokenize(el.get('namespace', ''))}"
+            for el in v1_elements
+        ]
+
+        v1_tfidf_matrix = tfidf.transform(v1_lexical_docs)
+
+        # 2. Dense Semantic Indexing via FAISS
+        v2_summaries = [el.get('summary', '') for el in v2_elements]
+        v1_summaries = [el.get('summary', '') for el in v1_elements]
+
+        v2_embs = np.array(self._embedder.embed_documents(v2_summaries), dtype=np.float32)
+        v1_embs = np.array(self._embedder.embed_documents(v1_summaries), dtype=np.float32)
+
+        # Normalize vectors for Cosine Inner Product in FAISS
+        faiss.normalize_L2(v2_embs)
+        faiss.normalize_L2(v1_embs)
+
+        dim = v2_embs.shape[1]
+        index = faiss.IndexFlatIP(dim)
+        index.add(v2_embs)
+
+        # Query top-K from FAISS
+        _, faiss_top_k = index.search(v1_embs, retrieval_k)
+
+        # Query top-K from TF-IDF
+        tfidf_sim = cosine_similarity(v1_tfidf_matrix, v2_tfidf_matrix)
+
+        # Merge Candidate Pools
+        candidate_map = {}
+
+        for i in range(n_v1):
+            lexical_top_k = np.argsort(-tfidf_sim[i])[:retrieval_k]
+            semantic_top_k = faiss_top_k[i]
+
+            # Combine unique indices from both retrieval methods
+            merged_candidates = list(set(lexical_top_k).union(set(semantic_top_k)))
+            candidate_map[i] = merged_candidates
+
+        return candidate_map
+
+
+    def _initial_semantic_match(self, v1_elements: List[dict], v2_elements: List[dict], z_matrix: np.ndarray) -> Tuple[List[Any], List[dict]]:
+        matches = []
         resolution_queue = []
-        v2_target_map = defaultdict(list)
-        v1_candidates_map = {}
 
-        if self.verbose:
-            log_info(f"Running Preliminary V1 <-> V2 API Element(s) Matching...")
+        dynamic_floor = 1.0
+        dynamic_threshold = 3.5
+        dynamic_margin = 1.0
 
-        n_v1, n_v2 = z_matrix.shape
+        for v1_indices, z_scores in enumerate(z_matrix):
+            v1_element = v1_elements[v1_indices]
 
-        if n_v1 == 0 or n_v2 == 0:
-            return final_rows, resolution_queue
-
-        # Define invariant statistical rule milestones inside Z-score space
-        dynamic_floor = 1.0       # Demands a full standard deviation from noise floor to be considered a candidate
-        dynamic_threshold = 3.5   # Universal extreme anomaly marker for high-confidence matches
-        dynamic_margin = 1.0      # Demands a full standard deviation gap to prevent ambiguity
-
-        # Step 2: Map out potential target relationships based on above-average Z-scores
-        for v1_idx, z_scores in enumerate(z_matrix):
             valid_indices = np.where(z_scores >= dynamic_floor)[0]
-            v1_candidates_map[v1_idx] = valid_indices
-
-            for v2_idx in valid_indices:
-                v2_target_map[v2_idx].append(v1_idx)
-
-        # Step 3: Determine cardinality and route elements to final rows or the LLM resolution queue
-        for v1_idx, z_scores in enumerate(z_matrix):
-            v1_data = v1_elements[v1_idx]
-            valid_indices = v1_candidates_map[v1_idx]
 
             if len(valid_indices) == 0:
-                resolution_queue.append({"v1_element": v1_data, "potential_targets": []})
+                resolution_queue.append({"v1_element": v1_element, "potential_targets": []})
 
                 continue
 
-            # Sort candidate targets descending based on their statistical Z-Score strength
             sorted_indices = valid_indices[np.argsort(-z_scores[valid_indices])]
-            has_multiple_targets = len(valid_indices) > 1
-            any_target_is_shared = any(len(v2_target_map[idx]) > 1 for idx in valid_indices)
+            candidates = [{"z_score": float(z_scores[index]), "element": v2_elements[index], "v2_index": int(index)} for index in sorted_indices]
 
-            cardinality = Complexity.ONE_TO_ONE
+            top_z_score = candidates[0]['z_score']
+            is_very_high_conf = top_z_score >= dynamic_threshold
+            has_clear_gap = len(candidates) == 1 or (top_z_score - candidates[1]['z_score'] > dynamic_margin)
+
+            if is_very_high_conf and has_clear_gap:
+                matches.append((v1_element, [candidates[0]]))
+            elif is_very_high_conf:
+                match_targets = [
+                    candidate for candidate in candidates 
+                    if candidate['z_score'] >= dynamic_threshold and (top_z_score - candidate['z_score'] <= dynamic_margin)
+                ]
+
+                if match_targets:
+                    matches.append((v1_element, match_targets))
+                else:
+                    resolution_queue.append({"v1_element": v1_element, "potential_targets": [candidate["element"] for candidate in candidates]})
+            else:
+                resolution_queue.append({"v1_element": v1_element, "potential_targets": [candidate["element"] for candidate in candidates]})
+
+        v2_usage_count = defaultdict(int)
+
+        for _, match_targets in matches:
+            for target in match_targets:
+                v2_usage_count[target['v2_index']] += 1
+
+        preliminary_rows = []
+
+        for v1_element, match_targets in matches:
+            has_multiple_targets = len(match_targets) > 1
+            any_target_is_shared = any(v2_usage_count[target['v2_index']] > 1 for target in match_targets)
 
             if has_multiple_targets and any_target_is_shared:
                 cardinality = Complexity.MANY_TO_MANY
@@ -1372,38 +1610,19 @@ class MapperAgent:
                 cardinality = Complexity.ONE_TO_MANY
             elif any_target_is_shared:
                 cardinality = Complexity.MANY_TO_ONE
-
-            # Collect target candidates alongside their native Z-scores
-            candidates = [{"z_score": float(z_scores[idx]), "element": v2_elements[idx]} for idx in sorted_indices]
-            top_z_score = candidates[0]['z_score']
-            
-            # Pure Z-space structural rules
-            is_very_high_conf = top_z_score >= dynamic_threshold
-            has_clear_gap = len(candidates) == 1 or (top_z_score - candidates[1]['z_score'] > dynamic_margin)
-
-            if is_very_high_conf and has_clear_gap:
-                final_rows.append(self._create_mapping_row(v1_data, candidates[0]['element'], Complexity.ONE_TO_ONE))
-            elif is_very_high_conf:
-                # Retain all contextual targets that safely clear above-average background noise
-                intentional_targets = [cand for cand in candidates if cand['z_score'] >= dynamic_floor and top_z_score - cand['z_score'] <= dynamic_margin]
-
-                for cand in intentional_targets:
-                    final_rows.append(self._create_mapping_row(v1_data, cand['element'], cardinality))
             else:
-                resolution_queue.append({"v1_element": v1_data, "potential_targets": [item["element"] for item in candidates]})
+                cardinality = Complexity.ONE_TO_ONE
 
-        if self.verbose:
-            print(f"    -> Found {len(final_rows)} Direct Matches and {len(resolution_queue)} Complex Cases.", file=sys.stderr)
+            for target in match_targets:
+                preliminary_rows.append(self._create_mapping_row(v1_element, target['element'], cardinality))
 
-        return final_rows, resolution_queue
+        return preliminary_rows, resolution_queue
 
-    def _match_initial(self, state: MapperAgentState) -> Dict[str, List[dict]]:
+
+    def _match_initial(self, state: Dict[str, Any]) -> Dict[str, List[dict]]:
         v1_elements, v2_elements = state.get('extracted_v1', []), state.get('extracted_v2', [])
 
         if not v1_elements or not v2_elements:
-            if self.verbose:
-                log_info(f"Skipping Initial Match: ONE OR BOTH VERSIONS HAVE NO ELEMENTS TO MATCH.")
-
             result = {"initial_mappings": [], "resolution_queue": []}
 
             self._save_stage_output("map_initial", result)
@@ -1411,16 +1630,23 @@ class MapperAgent:
             return result
 
         if self.verbose:
-            log_info(f"Running Initial Match...")
-
-        sim_matrix = self._compute_similarity_matrix(v1_elements, v2_elements)
-        z_matrix, _, _ = self._compute_modified_z_matrix(sim_matrix)
-        final_rows, resolution_queue = self._initial_semantic_match(v1_elements, v2_elements, z_matrix)
+            log_info("Running Initial Match Pipeline...")
+            log_info("    -> Stage 1: Retrieving Top-K Candidate Pools via FAISS & TF-IDF...")
+            
+        candidate_map = self._retrieve_candidate_pairs(v1_elements, v2_elements, top_k=30)
 
         if self.verbose:
-            display_rich_matrix(sim_matrix, v1_elements, v2_elements, 20, "Semantic Similarity Matrix")
-            display_rich_matrix(z_matrix, v1_elements, v2_elements, 20, "Semantic Similarity Z-Matrix (Z-Scores)")
-            
+            log_info("    -> Stage 2: Computing 5D Feature Vectors & Entropy Base Scores...")
+
+        sim_matrix = self._compute_similarity_matrix(v1_elements, v2_elements, candidate_map)
+
+        if self.verbose:
+            log_info("    -> Stage 3: Evaluating Local Z-Scores & Routing Mappings...")
+
+        z_matrix, _, _ = self._compute_modified_z_matrix(sim_matrix)
+        preliminary_rows, resolution_queue = self._initial_semantic_match(v1_elements, v2_elements, z_matrix)
+
+        # Convert matrices and save stage outputs
         sim_matrix_json = self._convert_sim_matrix_to_json(sim_matrix, v1_elements, v2_elements)
         z_matrix_json = self._convert_sim_matrix_to_json(z_matrix, v1_elements, v2_elements)
 
@@ -1428,13 +1654,14 @@ class MapperAgent:
         self._save_stage_output("z_matrix", z_matrix_json)
 
         result = {
-            "initial_mappings": [row.model_dump() if hasattr(row, 'model_dump') else row for row in final_rows],
+            "initial_mappings": [row.model_dump() if hasattr(row, 'model_dump') else row for row in preliminary_rows],
             "resolution_queue": resolution_queue
         }
 
         self._save_stage_output("preliminary_mapping", result)
 
         return result
+
 
     def _prepare_mapping_queues(self, state: MapperAgentState) -> dict:
         """Initializes branch-specific staging queues and raw storage accumulators."""
@@ -1731,12 +1958,12 @@ class MapperAgent:
 
         return result
 
-    def _create_mapping_row(self, v1_data: dict, v2_data: dict, complexity: str = "", notes: str = "") -> MappingRow:
+    def _create_mapping_row(self, v1_element: dict, v2_data: dict, complexity: str = "", notes: str = "") -> MappingRow:
         return MappingRow(
-            old_namespace=v1_data.get('namespace',''),
-            old_class_interface=v1_data.get('class_or_interface',''),
-            old_member=v1_data.get('member',''),
-            old_signature=v1_data.get('signature',''),
+            old_namespace=v1_element.get('namespace',''),
+            old_class_interface=v1_element.get('class_or_interface',''),
+            old_member=v1_element.get('member',''),
+            old_signature=v1_element.get('signature',''),
             new_namespace=v2_data.get('namespace',''),
             new_class_interface=v2_data.get('class_or_interface',''),
             new_member=v2_data.get('member',''),
@@ -1751,6 +1978,8 @@ class MapperAgent:
 
         try:
             if thread_id and thread_id.strip():
+                self.graph = self.build_graph(with_checkpoint=True)
+
                 config = {"configurable": {"thread_id": thread_id}}
                 current_state = self.graph.get_state(config)
 
@@ -1803,8 +2032,7 @@ class MapperAgent:
                         "mappings": []
                     }
             else:
-                if self.verbose:
-                    log_info(f"No Thread ID. Disabling Checkpoint.")
+                self.graph = self.build_graph()
 
                 initial_input = {"dir_v1": path_a, "dir_v2": path_b}
                 config = {}

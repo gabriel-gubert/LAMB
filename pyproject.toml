@@ -9,6 +9,7 @@ authors = [
     {name = "Gabriel Vitor Klaumann Gubert", email = "Gabriel.KlaumannGubert@thi.de"},
 ]
 dependencies = [
+    "faiss-cpu",
     "langchain",
     "langchain_community",
     "langchain_openai",
@@ -19,7 +20,9 @@ dependencies = [
     "markdownify",
     "numpy",
     "pydantic",
+    "rapidfuzz",
     "rich",
+    "scikit-learn",
     "tiktoken",
     "toml",
     "tree-sitter",

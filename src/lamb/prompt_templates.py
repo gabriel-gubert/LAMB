@@ -1035,6 +1035,87 @@ Output a flat list of objects in the format below:
 
 **Input:**
 
+```markdown
+# Module: api.v1.auth
+
+Global API authentication service configuration and identity management protocol interface. For full architectural specifications, view the [Authentication Architecture Guide](https://docs.example.com/api/v1/auth/architecture).
+
+## Constants
+
+### `TOKEN_EXPIRATION_SECONDS`
+```python
+TOKEN_EXPIRATION_SECONDS: int = 3600
+```
+
+The global Time-To-Live (TTL) duration in seconds for generated session tokens across all OAuth2 workers.
+
+* **Default Value:** `3600` (1 hour)
+* **Scope:** Cluster-wide session store state
+
+---
+
+## Classes
+
+# Class: AuthClient
+
+Primary HTTP authentication interface interacting with identity tokens. Implements the [`IBaseAuthClient`](https://www.google.com/url?sa=E&source=gmail&q=https://docs.example.com/api/v1/interfaces/IBaseAuthClient) abstract protocol contract.
+
+### Method: `login`
+
+```python
+@observe_telemetry
+async def login(credentials: Dict[str, str]) -> AuthToken
+```
+
+Authenticates a user against the central identity provider using standard credentials payload.
+
+#### Parameters:
+
+* `credentials`: A dictionary structure containing the identity payload parameters:
+* `username`: The unique user handle or email string.
+* `password`: The raw plain-text password string.
+
+#### Returns:
+
+* `AuthToken`: An active session token object representing the verified session identity.
+
+#### Raises:
+
+* `AuthenticationError`: Raised when credentials verification fails against the backing database layer.
+```
+
+**Output:**
+
+```json
+[
+  {
+    "namespace": "api.v1.auth",
+    "class_or_interface": "",
+    "member": "TOKEN_EXPIRATION_SECONDS",
+    "signature": "TOKEN_EXPIRATION_SECONDS: int = 3600",
+    "summary": "The global Time-To-Live (TTL) duration in seconds for generated session tokens across all OAuth2 workers.\n\n* **Default Value:** `3600` (1 hour)\n* **Scope:** Cluster-wide session store state"
+  },
+  {
+    "namespace": "api.v1.auth",
+    "class_or_interface": "AuthClient",
+    "member": "",
+    "signature": "Class: AuthClient",
+    "summary": "Primary HTTP authentication interface interacting with identity tokens. Implements the [`IBaseAuthClient`](https://docs.example.com/api/v1/interfaces/IBaseAuthClient) abstract protocol contract."
+  },
+  {
+    "namespace": "api.v1.auth",
+    "class_or_interface": "AuthClient",
+    "member": "login",
+    "signature": "@observe_telemetry\nasync def login(credentials: Dict[str, str]) -> AuthToken",
+    "summary": "Authenticates a user against the central identity provider using standard credentials payload.\n\n#### Parameters:\n* `credentials`: A dictionary structure containing the identity payload parameters:\n  * `username`: The unique user handle or email string.\n  * `password`: The raw plain-text password string.\n\n#### Returns:\n* `AuthToken`: An active session token object representing the verified session identity.\n\n#### Raises:\n* `AuthenticationError`: Raised when credentials verification fails against the backing database layer."
+  }
+]
+```
+
+---
+
+**Input:**
+
 ```html
 <api-surface>
     <namespace>ForgeEngine.Core</namespace>
