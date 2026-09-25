@@ -1270,6 +1270,21 @@ class MapperAgent:
         return s2.lower().strip()
 
 
+    def _embed_in_batches(self, texts: List[str], batch_size: int = 50, desc: str = "Generating Embeddings") -> np.ndarray:
+        if not texts:
+            return np.empty((0, 0), dtype=np.float32)
+
+        all_embeddings = []
+
+        for i in tqdm(range(0, len(texts), batch_size), desc=desc, unit="batch", disable=not self.verbose):
+            batch = texts[i : i + batch_size]
+            embeddings = self._embedder.embed_documents(batch)
+
+            all_embeddings.extend(embeddings)
+
+        return np.array(all_embeddings, dtype=np.float32)
+
+
     def _compute_lexical_signal_matrix(self, v1_strings: List[str], v2_strings: List[str]) -> np.ndarray:
         """Computes a composite lexical similarity matrix (sub-token Jaccard + RapidFuzz C-cdist)."""
 
@@ -1355,8 +1370,8 @@ class MapperAgent:
         if n_v1 == 0 or n_v2 == 0:
             return np.zeros((n_v1, n_v2), dtype=np.float32)
 
-        v1_embs = np.array(self._embedder.embed_documents(v1_texts), dtype=np.float32)
-        v2_embs = np.array(self._embedder.embed_documents(v2_texts), dtype=np.float32)
+        v1_embs = self._embed_in_batches(v1_texts, batch_size=50, desc="Embedding V1 Signal Matrix")
+        v2_embs = self._embed_in_batches(v2_texts, batch_size=50, desc="Embedding V2 Signal Matrix")
 
         raw_matrix = cosine_similarity(v1_embs, v2_embs)
 
@@ -1491,13 +1506,17 @@ class MapperAgent:
 
 
     def _retrieve_candidate_pairs(self, v1_elements: List[dict], v2_elements: List[dict], top_k: int = 30) -> Dict[int, List[int]]:
-        """Stage 1: Prunes search space from N x M down to N x K candidates using TF-IDF and FAISS."""
-
         n_v1, n_v2 = len(v1_elements), len(v2_elements)
 
         retrieval_k = min(top_k, n_v2)
 
+        if self.verbose:
+            print(f"        -> Retrieving Top-{retrieval_k} Candidate Pair(s) across {n_v1} V1 and {n_v2} V2 Element(s)...", file=sys.stderr)
+
         # 1. Lexical Candidate Indexing via Scikit-Learn TF-IDF
+        if self.verbose:
+            print("        -> Building TF-IDF Lexical Index...", file=sys.stderr)
+
         v2_lexical_docs = [
             f"{self._tokenize(el.get('member', ''))} "
             f"{self._tokenize(el.get('class_or_interface', ''))} "
@@ -1518,27 +1537,49 @@ class MapperAgent:
         v1_tfidf_matrix = tfidf.transform(v1_lexical_docs)
 
         # 2. Dense Semantic Indexing via FAISS
+        if self.verbose:
+            print("        -> Building FAISS Dense Semantic Index...", file=sys.stderr)
+
         v2_summaries = [el.get('summary', '') for el in v2_elements]
         v1_summaries = [el.get('summary', '') for el in v1_elements]
 
-        v2_embs = np.array(self._embedder.embed_documents(v2_summaries), dtype=np.float32)
-        v1_embs = np.array(self._embedder.embed_documents(v1_summaries), dtype=np.float32)
+        if self.verbose:
+            print(f"            -> Generating Embeddings for {len(v1_summaries)} V1 Summaries and {len(v2_summaries)} V2 Summaries...", file=sys.stderr)
+
+        v2_embs = self._embed_in_batches(v2_summaries, batch_size=50, desc="Embedding V2 Summaries")
+        v1_embs = self._embed_in_batches(v1_summaries, batch_size=50, desc="Embedding V1 Summaries")
+
+        if self.verbose:
+            print(f"            -> Normalizing L2 Vectors...", file=sys.stderr)
 
         # Normalize vectors for Cosine Inner Product in FAISS
         faiss.normalize_L2(v2_embs)
         faiss.normalize_L2(v1_embs)
 
         dim = v2_embs.shape[1]
+
+        if self.verbose:
+            print(f"            -> Initializing FAISS IndexFlatIP...", file=sys.stderr)
+
         index = faiss.IndexFlatIP(dim)
         index.add(v2_embs)
 
         # Query top-K from FAISS
+        if self.verbose:
+            print(f"            -> Searching FAISS Index for Top-{retrieval_k} Nearest Semantic Candidates...", file=sys.stderr)
+
         _, faiss_top_k = index.search(v1_embs, retrieval_k)
 
         # Query top-K from TF-IDF
+        if self.verbose:
+            print("        -> Computing TF-IDF Cosine Similarity matrix...", file=sys.stderr)
+
         tfidf_sim = cosine_similarity(v1_tfidf_matrix, v2_tfidf_matrix)
 
         # Merge Candidate Pools
+        if self.verbose:
+            print("        -> Merging Lexical and Semantic Candidate Pools...", file=sys.stderr)
+
         candidate_map = {}
 
         for i in range(n_v1):
@@ -1548,6 +1589,10 @@ class MapperAgent:
             # Combine unique indices from both retrieval methods
             merged_candidates = list(set(lexical_top_k).union(set(semantic_top_k)))
             candidate_map[i] = merged_candidates
+
+        if self.verbose:
+            avg_candidates = sum(len(c) for c in candidate_map.values()) / max(1, len(candidate_map))
+            print(f"        -> Candidate Pool Merged (Average {avg_candidates:.1f} Candidates Per V1 Element).", file=sys.stderr)
 
         return candidate_map
 
@@ -1631,17 +1676,17 @@ class MapperAgent:
 
         if self.verbose:
             log_info("Running Initial Match Pipeline...")
-            log_info("    -> Stage 1: Retrieving Top-K Candidate Pools via FAISS & TF-IDF...")
+            print("    -> Retrieving Top-K Candidate Pools via FAISS & TF-IDF...", file=sys.stderr)
             
         candidate_map = self._retrieve_candidate_pairs(v1_elements, v2_elements, top_k=30)
 
         if self.verbose:
-            log_info("    -> Stage 2: Computing 5D Feature Vectors & Entropy Base Scores...")
+            log_info("    -> Computing 5D Feature Vectors & Entropy Base Scores...")
 
         sim_matrix = self._compute_similarity_matrix(v1_elements, v2_elements, candidate_map)
 
         if self.verbose:
-            log_info("    -> Stage 3: Evaluating Local Z-Scores & Routing Mappings...")
+            log_info("    -> Evaluating Local Z-Scores & Routing Mappings...")
 
         z_matrix, _, _ = self._compute_modified_z_matrix(sim_matrix)
         preliminary_rows, resolution_queue = self._initial_semantic_match(v1_elements, v2_elements, z_matrix)
