@@ -155,7 +155,7 @@ class DynamicConfidenceEvaluator:
 
         if not snippet_range:
             if verbose:
-                log_info(f"Divergence for Rule #{rule_mapping["applied_rule"].rule_id}: Source Code Snippet `{rule_mapping["output_snippet"][:40]}...` Not Found in Migrated Code.")
+                log_info(f"Divergence for Rule #{rule_mapping['applied_rule'].rule_id}: Source Code Snippet `{rule_mapping['output_snippet'][:40]}...` Not Found in Migrated Code.")
             
             fallback_range = ASTRange(
                 start_line=1, start_column=0, end_line=1, end_column=1,
@@ -228,7 +228,7 @@ class DynamicConfidenceEvaluator:
             error_messages = "\n".join([syntax_error.message for syntax_error in syntax_errors])
 
             if verbose:
-                log_info(f"Syntax Error(s) in Rule #{rule_mapping["applied_rule"].rule_id} at {snippet_range}:\n\n{error_messages}\n\n")
+                log_info(f"Syntax Error(s) in Rule #{rule_mapping['applied_rule'].rule_id} at {snippet_range}:\n\n{error_messages}\n\n")
 
             return RuleConfidenceScore(
                 rule_id=rule_mapping["applied_rule"].rule_id,

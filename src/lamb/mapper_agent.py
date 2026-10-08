@@ -439,7 +439,7 @@ class MapperAgent:
         output_path = self.output_dir / f"{stage_name}_output.json"
 
         if self.verbose:
-            log_info(f"Saving {stage_name.replace("_", " ").title()} to \"{output_path}\"...")
+            log_info(f"Saving {stage_name.replace('_', ' ').title()} to \"{output_path}\"...")
 
         try:
             with open(output_path, "w", encoding="utf-8") as f:
@@ -711,8 +711,8 @@ class MapperAgent:
             })
 
             if self.verbose:
-                print(f"    -> Found Child Directory at \"{dir_samples[-1].get("path", "")}\"", file=sys.stderr)
-                print(f"        -> Top-3 File Extension(s): {", ".join(dir_samples[-1].get("top_extensions", []))}", file=sys.stderr)
+                print(f"    -> Found Child Directory at \"{dir_samples[-1].get('path', '')}\"", file=sys.stderr)
+                print(f"        -> Top-3 File Extension(s): {', '.join(dir_samples[-1].get('top_extensions', []))}", file=sys.stderr)
 
         return dir_samples
 
@@ -1015,7 +1015,7 @@ class MapperAgent:
             return "chunk_files"
 
         if self.verbose:
-            log_info(f"Split Artifact(s) in {len(state.get("raw_chunks_buffer", []))} Total Chunk(s).")
+            log_info(f"Split Artifact(s) in {len(state.get('raw_chunks_buffer', []))} Total Chunk(s).")
 
         return "prep_chunk_dedup_queue"
 
@@ -1087,7 +1087,7 @@ class MapperAgent:
             return "deduplicate_chunks"
 
         if self.verbose:
-            log_info(f"Found {len(state.get("chunk_registry", {}).keys())} Total Unique Chunk(s).")
+            log_info(f"Found {len(state.get('chunk_registry', {}).keys())} Total Unique Chunk(s).")
 
         return "prep_extraction"
 
@@ -1098,6 +1098,48 @@ class MapperAgent:
         """
 
         chunk_registry = dict(state.get("chunk_registry", {}))
+
+        # ------------------------------------------------------------------
+        # Export Separate Unique Chunks Files (v1 and v2) to self.tmp_dir
+        # ------------------------------------------------------------------
+
+        if self.tmp_dir:
+            v1_export = []
+            v2_export = []
+
+            for chunk_hash, item in chunk_registry.items():
+                chunk_text = item.get("chunk_text", "").strip()
+                if not chunk_text:
+                    continue
+
+                entry = {
+                    "hash": chunk_hash,
+                    "text": chunk_text,
+                    "sources": list(item.get("sources", []))
+                }
+
+                if item.get("version") == "v1":
+                    v1_export.append(entry)
+                elif item.get("version") == "v2":
+                    v2_export.append(entry)
+
+            try:
+                v1_file = self.tmp_dir / "lamb_unique_chunks_v1.json"
+                v2_file = self.tmp_dir / "lamb_unique_chunks_v2.json"
+
+                v1_file.write_text(json.dumps(v1_export, indent=2, ensure_ascii=False), encoding="utf-8")
+                v2_file.write_text(json.dumps(v2_export, indent=2, ensure_ascii=False), encoding="utf-8")
+
+                if self.verbose:
+                    log_info(f"Exported {len(v1_export)} V1 Unique Chunks to {v1_file}.")
+                    log_info(f"Exported {len(v2_export)} V2 Unique Chunks to {v2_file}.")
+            except Exception as e:
+                if self.verbose:
+                    log_error(f"Failed to Export Unique Chunk JSON Files: {e}")
+
+        # ------------------------------------------------------------------
+        # Bundling Logic
+        # ------------------------------------------------------------------
 
         MAX_BUNDLE_CHARS = 60000
 
@@ -1189,7 +1231,7 @@ class MapperAgent:
                         active_extracted.append(element.model_dump() if hasattr(element, "model_dump") else element)
 
                     if self.verbose:
-                        print(f"    -> Extracted {len(result.elements)} {"V1" if is_v1 else "V2"} API Element(s) from a Chunk Bundle of {len(bundle_text)} Characters...", file=sys.stderr)
+                        print(f"    -> Extracted {len(result.elements)} {'V1' if is_v1 else 'V2'} API Element(s) from a Chunk Bundle of {len(bundle_text)} Characters...", file=sys.stderr)
                         
 
             except Exception as E:
@@ -1217,7 +1259,7 @@ class MapperAgent:
             return "extract_step"
 
         if self.verbose:
-            log_info(f"Found {len(state.get("extracted_v1", []))} API Element(s) for V1 and {len(state.get("extracted_v2", []))} API Element(s) for V2.")
+            log_info(f"Found {len(state.get('extracted_v1', []))} API Element(s) for V1 and {len(state.get('extracted_v2', []))} API Element(s) for V2.")
 
         return "deduplicate_elements"
 

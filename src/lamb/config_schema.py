@@ -52,7 +52,8 @@ class ConfigSchema:
             "config_overrides": [
                 {"flags": ["--summarization-threshold"], "kwargs": {"type": int, "help": "Override Token Threshold for Summarization"}, "config_path": "tasks.migration.summarization_threshold"},
                 {"flags": ["--max-attempts"], "kwargs": {"type": int, "help": "Override Maximum Number of Migration Attempts"}, "config_path": "tasks.migration.max_attempts"},
-                {"flags": ["--report"], "kwargs": {"type": str, "help": "File path to save the migration confidence and audit report JSON"}, "config_path": "tasks.migration.report"}
+                {"flags": ["--report"], "kwargs": {"type": str, "help": "File path to save the migration confidence and audit report JSON"}, "config_path": "tasks.migration.report"},
+                {"flags": ["--logprobs"], "kwargs": {"action": "store_true", "help": "Uses model log probabilities to improve score calculations."}, "config_path": "tasks.migration.logprobs"}
             ],
             "agents": [
                 "tasks.migration.migration",

@@ -9,6 +9,7 @@ authors = [
     {name = "Gabriel Vitor Klaumann Gubert", email = "Gabriel.KlaumannGubert@thi.de"},
 ]
 dependencies = [
+    "beautifulsoup4",
     "faiss-cpu",
     "langchain",
     "langchain_community",
@@ -17,6 +18,7 @@ dependencies = [
     "langgraph",
     "langgraph-checkpoint-sqlite",
     "litellm[proxy]",
+    "markdown",
     "markdownify",
     "numpy",
     "pydantic",

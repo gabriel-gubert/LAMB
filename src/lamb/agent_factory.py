@@ -134,13 +134,14 @@ def migrator_agent(config_manager: ConfigManager) -> MigratorAgent:
     Enforces logprobs=True for the migrator component.
     """
 
+    logprobs = config_manager.get("logprobs", False)
     migrator = create_openai_component(
         RateLimitedChatOpenAI,
         config_manager,
         "migration.migration",
         override_kwargs={
             "logprobs": True
-        }
+        } if logprobs else {}
     )
 
     return MigratorAgent(

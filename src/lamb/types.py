@@ -1,13 +1,13 @@
 from dataclasses import dataclass, field
-from enum import Enum, StrEnum
+from enum import Enum
 from typing import List, Optional
 
 
-class Complexity(StrEnum):
+class Complexity(str, Enum):
     ONE_TO_ONE = "1:1"
     ONE_TO_MANY = "1:N"
     MANY_TO_ONE = "N:1"
-    MANY_TO_MANY = "N:N"
+    MANY_TO_MANY = "M:N"
     AMBIGUOUS = "AMBIGUOUS"
     DEPRECATED = "DEPRECATED"
 
@@ -49,12 +49,15 @@ class MigrationRule:
     matches: List[MatchMapping] = field(default_factory=list)
 
     def serialize(self) -> str:
-        target_identity = f"`{self.old_namespace}.{self.old_class_interface}`"
+        target_parts = [p for p in [self.old_namespace, self.old_class_interface] if p]
+        target_identity = f"`{'.'.join(target_parts)}`" if target_parts else ""
+
         if self.old_member:
-            target_identity += f" -> `{self.old_member}`"
+            member_str = f"{self.old_member}"
+            target_identity = f"`{target_identity}.{member_str}`" if target_identity else f"`{member_str}`"
 
         comp_val = self.complexity.value if hasattr(self.complexity, 'value') else str(self.complexity)
-        rule_block = f"Rule ID: {self.rule_id} | Cardinality: [{comp_val}] | Target: {target_identity}\n"
+        rule_block = f"Rule #{self.rule_id} | Cardinality: {comp_val} | Target: {target_identity}\n"
 
         for m in self.matches:
             has_target = any([m.new_namespace, m.new_class_interface, m.new_member])
@@ -62,15 +65,19 @@ class MigrationRule:
             if self.complexity == Complexity.DEPRECATED or not has_target:
                 rule_block += "- Target Destination: DEPRECATED / REMOVED (No replacement entity in target version)\n"
             else:
-                dest = f"`{m.new_namespace}.{m.new_class_interface}`"
+                dest_parts = [p for p in [m.new_namespace, m.new_class_interface] if p]
+                dest = f"{'.'.join(dest_parts)}" if dest_parts else ""
+
                 if m.new_member:
-                    dest += f" -> `{m.new_member}`"
+                    dest = f"`{dest}.{m.new_member}`" if dest else f"`{m.new_member}`"
+
                 rule_block += f"- Target Destination: {dest}\n"
 
-            if m.old_signature or m.new_signature:
-                rule_block += f"  - Signature: `{m.old_signature}` -> `{m.new_signature}`\n"
+            if m.new_signature:
+                rule_block += f"  - Signature: `{m.new_signature}`\n"
 
             additional_notes = m.additional_notes
+
             if additional_notes:
                 rule_block += f"  - Additional Notes: {additional_notes}\n"
 

@@ -1004,10 +1004,10 @@ Analyze the provided file content and exhaustively extract ALL structural API el
 
 ### FIELD EXTRACTION RULES
 
-* **namespace**: The full package, namespace, or module path. Use a sensible default or leave empty if completely absent.
-* **class_or_interface**: The name of the containing class, interface, struct, trait, or enum. Leave this blank ONLY for standalone top-level elements that genuinely lack a parent container. If you are extracting the container itself, place its name here.
-* **member**: The name of the specific function, method, constant, macro, or variant. Leave this blank `""` if the current record represents the container itself.
-* **signature**: The full technical signature (including name, modifiers, parameters, return types, or HTTP verbs). For elements without complex signatures (like global constants or enum variants), copy the exact declaration line.
+* **namespace**: The full package, namespace, or module path. Must be a clean, unformatted string. Use a sensible default or leave empty if completely absent.
+* **class_or_interface**: The name of the containing class, interface, struct, trait, or enum. Must be a clean, unformatted string. Leave this blank ONLY for standalone top-level elements that genuinely lack a parent container. If you are extracting the container itself, place its name here.
+* **member**: The name of the specific function, method, constant, macro, or variant. Must be a clean, unformatted string. Leave this blank `""` if the current record represents the container itself.
+* **signature**: The full technical signature (including name, modifiers, parameters, return types, or HTTP verbs). For elements without complex signatures (like global constants or enum variants), copy the exact declaration line. Strip any Markdown/Markup container markers while preserving all native programming language syntax.
 * **summary**: The textual documentation extracted from the source text. You must adhere strictly to the following constraints when generating this value:
 
 1. **Copy-Paste Extraction:** Act exclusively as a direct extraction tool to harvest all docstrings, comments, and raw text.
