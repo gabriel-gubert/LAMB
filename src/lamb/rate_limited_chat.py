@@ -1,8 +1,10 @@
 import time
 import threading
 from typing import Any, List, Tuple, Dict
-import tiktoken
+
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+
+import tiktoken
 
 
 class RateLimitedChatOpenAI(ChatOpenAI):

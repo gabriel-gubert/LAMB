@@ -12,11 +12,19 @@ import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
-from .agent_factory import migrator_agent, mapper_agent
+from .agent_factory import (
+    migrator_agent,
+    mapper_agent
+)
 from .config_manager import ConfigManager
 from .config_schema import ConfigSchema
 from .registry_manager import RegistryManager
-from .logger import print_migration_report, log_info, log_warn, log_error
+from .logger import (
+    print_migration_report,
+    log_info,
+    log_warn,
+    log_error
+)
 
 
 def _set_pdeathsig():

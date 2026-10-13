@@ -2,7 +2,11 @@ import math
 from dataclasses import dataclass, field
 from typing import List, Set, Optional, Union, Dict, Any, Tuple
 
-from .logger import log_info, log_warn, log_error
+from .logger import (
+    log_info,
+    log_warn,
+    log_error
+)
 from .types import (
     Complexity,
     ASTSyntaxError,

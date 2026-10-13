@@ -7,9 +7,16 @@ from typing import TypedDict, List, Dict, Any, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from .logger import log_info, log_warn, log_error
+from .logger import (
+    log_info,
+    log_warn,
+    log_error
+)
 from .rate_limited_chat import RateLimitedChatOpenAI
-from .smart_parser import SmartParser, ASTSyntaxError
+from .smart_parser import (
+    SmartParser,
+    ASTSyntaxError
+)
 from .confidence import (
     DynamicConfidenceEvaluator, 
     TokenLogprob, 
@@ -21,7 +28,7 @@ from .output_templates import (
     MigrationPlanSchema,
     MigrationOutputSchema
 )
-from .prompt_templates import (
+from .prompts import (
     get_summarization_prompt,
     get_migration_planner_prompt,
     get_migration_prompt,
@@ -69,7 +76,7 @@ class MigrationState(TypedDict):
     priority_sections: Optional[List[dict]]
 
 
-class MigratorAgent:
+class Migrator:
     def __init__(
         self,
         migrator: RateLimitedChatOpenAI,

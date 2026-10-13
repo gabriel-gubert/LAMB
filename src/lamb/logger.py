@@ -8,19 +8,51 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
+import logging
+
 import numpy as np
 
 
-def log_info(message: str):
-    print(f"[*] {message}", file=sys.stderr)
+class ColorFormatter(logging.Formatter):
+    CYAN = "\033[96m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
+    GRAY = "\033[90m"
+
+    FORMATS = {
+        logging.INFO: f"{GRAY}%(asctime)s{RESET} {CYAN}{BOLD}[i]{RESET} %(message)s",
+        logging.WARNING: f"{GRAY}%(asctime)s{RESET} {YELLOW}{BOLD}[!]{RESET} %(message)s",
+        logging.ERROR: f"{GRAY}%(asctime)s{RESET} {RED}{BOLD}[✗]{RESET} %(message)s",
+    }
+
+    def format(self, record: logging.LogRecord) -> str:
+        log_fmt = self.FORMATS.get(record.levelno, "%(message)s")
+        formatter = logging.Formatter(log_fmt, datefmt="%Y-%m-%d %H:%M:%S")
+
+        return formatter.format(record)
 
 
-def log_warn(message: str):
-    print(f"[/!\\] {message}", file=sys.stderr)
+_logger = logging.getLogger("custom_colored_logger")
+_logger.setLevel(logging.INFO)
+
+if not _logger.handlers:
+    _handler = logging.StreamHandler(sys.stderr)
+    _handler.setFormatter(ColorFormatter())
+    _logger.addHandler(_handler)
 
 
-def log_error(message: str):
-    print(f"[X] {message}", file=sys.stderr)
+def log_info(message: str) -> None:
+    _logger.info(message)
+
+
+def log_warn(message: str) -> None:
+    _logger.warning(message)
+
+
+def log_error(message: str) -> None:
+    _logger.error(message)
 
 
 def print_agent_state(state: dict, title: str = "Mapper Agent State", n: int = 5):

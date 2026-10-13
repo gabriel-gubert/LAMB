@@ -1,4 +1,3 @@
-import json
 import toml
 from pathlib import Path
 from typing import Any

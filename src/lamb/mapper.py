@@ -51,7 +51,7 @@ from .output_templates import (
     ResolutionResult,
     DirectoryDiscovery
 )
-from .prompt_templates import (
+from .prompts import (
     get_mapper_extraction_prompt,
     get_general_mapper_resolution_prompt,
     get_lexical_mapper_resolution_prompt,
@@ -307,7 +307,7 @@ def _process_single_file_split(file_path: str, version: str) -> list[dict]:
         return []
 
 
-class MapperAgentState(TypedDict):
+class MappingState(TypedDict):
     run_id: str
 
     # --- Input Parameters ---
@@ -368,7 +368,7 @@ class MapperAgentState(TypedDict):
     mappings: List[dict]
 
 
-class MapperAgent:
+class Mapper:
     def __init__(
             self,
             discoverer: RateLimitedChatOpenAI,
@@ -457,7 +457,7 @@ class MapperAgent:
 
         log_info("Building LangGraph...")
 
-        workflow = StateGraph(MapperAgentState)
+        workflow = StateGraph(MappingState)
 
         # =========================================================================
         # 1. NODE REGISTRATION
@@ -740,7 +740,7 @@ class MapperAgent:
         return sorted(list(matched_files))
 
 
-    def _init_discovery(self, state: MapperAgentState) -> dict:
+    def _init_discovery(self, state: MappingState) -> dict:
         """Node: Gathers structural folders and stages them into active state queues."""
 
         dir_v1 = str(state.get("dir_v1", ""))
@@ -760,7 +760,7 @@ class MapperAgent:
         }
 
 
-    def _discovery_step(self, state: MapperAgentState) -> dict:
+    def _discovery_step(self, state: MappingState) -> dict:
         """Evaluates a single batched chunk of staged folders through LLM routers."""
 
         queue_v1 = list(state.get("discovery_queue_v1", []))
@@ -817,7 +817,7 @@ class MapperAgent:
             return {"discovery_queue_v2": queue_v2, "files_v2": sorted(list(set(files_v2)))}
 
 
-    def _should_continue_discovery(self, state: MapperAgentState) -> str:
+    def _should_continue_discovery(self, state: MappingState) -> str:
         """Conditional Router checking if directory exploration queues are exhausted."""
 
         if state.get("discovery_queue_v1") or state.get("discovery_queue_v2"):
@@ -834,7 +834,7 @@ class MapperAgent:
         return "prep_sanitization"
 
 
-    def _prepare_sanitization_queues(self, state: MapperAgentState) -> dict:
+    def _prepare_sanitization_queues(self, state: MappingState) -> dict:
         if self.verbose:
             log_info(f"Removing Boilerplate/Redundant/Duplicated Text from Artifact(s)...")
 
@@ -901,7 +901,7 @@ class MapperAgent:
         return sanitized_files
 
 
-    def _sanitize_files(self, state: MapperAgentState) -> Dict[str, Any]:
+    def _sanitize_files(self, state: MappingState) -> Dict[str, Any]:
         """Main node method: delegates v1 and v2 queue sanitization to _sanitize_queue."""
         v1_queue = list(state.get("files_v1_queue", []))
         v2_queue = list(state.get("files_v2_queue", []))
@@ -930,7 +930,7 @@ class MapperAgent:
         return result
 
 
-    def _prepare_chunk_queues(self, state: MapperAgentState) -> dict:
+    def _prepare_chunk_queues(self, state: MappingState) -> dict:
         """Runs once after discovery completes to setup the chunking tracking loops
         and initialize the shared processing buffers.
         """
@@ -947,7 +947,7 @@ class MapperAgent:
         }
 
 
-    def _chunk_files(self, state: MapperAgentState) -> Dict[str, Any]:
+    def _chunk_files(self, state: MappingState) -> Dict[str, Any]:
         """Pops a batch of files, processes them in parallel across multiple 
         CPU cores using ProcessPoolExecutor, and updates the state buffer.
         """
@@ -1008,7 +1008,7 @@ class MapperAgent:
         return result
 
 
-    def _should_continue_chunking(self, state: MapperAgentState) -> str:
+    def _should_continue_chunking(self, state: MappingState) -> str:
         """Controls the routing loop processing files into raw chunks."""
 
         if state.get("sanitized_files_v1_queue") or state.get("sanitized_files_v2_queue"):
@@ -1020,7 +1020,7 @@ class MapperAgent:
         return "prep_chunk_dedup_queue"
 
 
-    def _prepare_chunk_deduplication_queue(self, state: MapperAgentState) -> dict:
+    def _prepare_chunk_deduplication_queue(self, state: MappingState) -> dict:
         """Runs once after file chunking completes to safely copy raw data blocks
         into an isolated, sacrificial loop processing queue.
         """
@@ -1035,7 +1035,7 @@ class MapperAgent:
         }
 
 
-    def _deduplicate_chunks(self, state: MapperAgentState) -> dict:
+    def _deduplicate_chunks(self, state: MappingState) -> dict:
         """Pops a batch of items from the queue, processes them in parallel 
         using multiple CPU cores, and updates the registry before checkpointing.
         """
@@ -1080,7 +1080,7 @@ class MapperAgent:
         }
 
 
-    def _should_continue_deduplication(self, state: MapperAgentState) -> str:
+    def _should_continue_deduplication(self, state: MappingState) -> str:
         """Evaluates if elements remain inside the dedicated loop queue tracker."""
 
         if len(state.get("deduplication_queue", [])) > 0:
@@ -1092,7 +1092,7 @@ class MapperAgent:
         return "prep_extraction"
 
 
-    def _prepare_extraction_queues(self, state: MapperAgentState) -> dict:
+    def _prepare_extraction_queues(self, state: MappingState) -> dict:
         """Greedily aggregates separate unique chunks into maximized token-limit payloads 
         to prevent sending thousands of individual small requests to the LLM.
         """
@@ -1193,7 +1193,7 @@ class MapperAgent:
         }
 
 
-    def _extract_step(self, state: MapperAgentState) -> dict:
+    def _extract_step(self, state: MappingState) -> dict:
         """Invokes the extraction LLM on a batch of packed, multi-chunk optimized 
         payload context blocks sequentially before saving a checkpoint.
         """
@@ -1252,7 +1252,7 @@ class MapperAgent:
             }
 
 
-    def _should_continue_extraction(self, state: MapperAgentState) -> str:
+    def _should_continue_extraction(self, state: MappingState) -> str:
         """Conditional router checking if files are left to process."""
 
         if state.get("chunks_v1_queue") or state.get("chunks_v2_queue"):
@@ -1264,7 +1264,7 @@ class MapperAgent:
         return "deduplicate_elements"
 
 
-    def _deduplicate_elements(self, state: MapperAgentState) -> dict:
+    def _deduplicate_elements(self, state: MappingState) -> dict:
         """Dedicated node that executes once all elements are extracted to deduplicate globally."""
 
         def deduplicate(elements: List[dict]) -> List[dict]:
@@ -1750,7 +1750,7 @@ class MapperAgent:
         return result
 
 
-    def _prepare_mapping_queues(self, state: MapperAgentState) -> dict:
+    def _prepare_mapping_queues(self, state: MappingState) -> dict:
         """Initializes branch-specific staging queues and raw storage accumulators."""
 
         resolution_queue = state.get("resolution_queue", [])
@@ -1769,7 +1769,7 @@ class MapperAgent:
             "raw_single": []
         }
 
-    def _execute_agent_mapping_step(self, state: MapperAgentState, resolver_client: RateLimitedChatOpenAI, prompt: str, agent_label: str, queue_key: str, raw_key: str) -> dict:
+    def _execute_agent_mapping_step(self, state: MappingState, resolver_client: RateLimitedChatOpenAI, prompt: str, agent_label: str, queue_key: str, raw_key: str) -> dict:
         """Processes a single batch of complex mappings for a specific agent strategy."""
 
         queue = list(state.get(queue_key, []))
@@ -1802,12 +1802,12 @@ class MapperAgent:
 
         return {queue_key: queue, raw_key: raw_accumulated}
 
-    def _should_continue_agent_mapping(self, state: MapperAgentState, queue_key: str, next_step_node: str, finalized_node: str) -> str:
+    def _should_continue_agent_mapping(self, state: MappingState, queue_key: str, next_step_node: str, finalized_node: str) -> str:
         """Determines whether an agent branch needs to continue batching or proceed to finalization."""
 
         return next_step_node if state.get(queue_key) else finalized_node
 
-    def _finalize_agent_mapping(self, state: MapperAgentState, agent_label: str, raw_key: str, output_key: str) -> dict:
+    def _finalize_agent_mapping(self, state: MappingState, agent_label: str, raw_key: str, output_key: str) -> dict:
         """Processes raw batch extractions, computes cross-reference structural cardinalities, and exports snapshots."""
 
         unresolved_rows = state.get(raw_key, [])
@@ -1873,7 +1873,7 @@ class MapperAgent:
 
         return result
 
-    def _check_consensus_votes(self, state: MapperAgentState) -> dict:
+    def _check_consensus_votes(self, state: MappingState) -> dict:
         """Evaluates agent cross-votes, isolates majorities, and stacks deadlocks into a state queue."""
 
         maps_1 = list(state.get("mappings_agent_1", []))
@@ -1949,7 +1949,7 @@ class MapperAgent:
             "raw_arbitrated_mappings": []
         }
 
-    def _arbitrate_stalemate_step(self, state: MapperAgentState) -> dict:
+    def _arbitrate_stalemate_step(self, state: MappingState) -> dict:
         """Processes exactly one batch of ties through the referee model, updating checkpoint blocks."""
 
         queue = list(state.get("stalemates_queue", []))
@@ -1981,12 +1981,12 @@ class MapperAgent:
 
         return {"stalemates_queue": queue, "raw_arbitrated_mappings": raw_arbitrated}
 
-    def _should_continue_arbitration(self, state: MapperAgentState) -> str:
+    def _should_continue_arbitration(self, state: MappingState) -> str:
         """Routes out of arbitration once deadlocks are resolved."""
 
         return "arbitrate_step" if state.get("stalemates_queue") else "finalize_consensus"
 
-    def _finalize_consensus(self, state: MapperAgentState) -> dict:
+    def _finalize_consensus(self, state: MappingState) -> dict:
         """Assembles base agreements and arbitrated stalemates into final state."""
 
         base_mappings = list(state.get("base_consensus_mappings", []))

@@ -1,9 +1,12 @@
 from typing import Any, TypeVar, Type
 
 from .config_manager import ConfigManager
-from .mapper_agent import MapperAgent
-from .migrator_agent import MigratorAgent
-from .rate_limited_chat import RateLimitedChatOpenAI, RateLimitedOpenAIEmbeddings
+from .mapper import Mapper
+from .migrator import Migrator
+from .rate_limited_chat import (
+    RateLimitedChatOpenAI,
+    RateLimitedOpenAIEmbeddings
+)
 
 try:
     from pydantic import TypeAdapter
@@ -127,7 +130,7 @@ def create_openai_component(
     return component_class(**kwargs)
 
 
-def migrator_agent(config_manager: ConfigManager) -> MigratorAgent:
+def migrator_agent(config_manager: ConfigManager) -> Migrator:
     """
     Factory function to create a LambAgent instance from a ConfigManager.
     Supports local vLLM deployments and extensive ChatOpenAI settings.
@@ -144,7 +147,7 @@ def migrator_agent(config_manager: ConfigManager) -> MigratorAgent:
         } if logprobs else {}
     )
 
-    return MigratorAgent(
+    return Migrator(
         migrator=migrator,
         summarizer=create_openai_component(RateLimitedChatOpenAI, config_manager, "migration.summarization"),
         detector=create_openai_component(RateLimitedChatOpenAI, config_manager, "migration.detection"),
@@ -156,9 +159,9 @@ def migrator_agent(config_manager: ConfigManager) -> MigratorAgent:
         verbose=config_manager.get("general.verbose", False)
     )
 
-def mapper_agent(config_manager: ConfigManager) -> MapperAgent:
+def mapper_agent(config_manager: ConfigManager) -> Mapper:
     """
-    Factory function to create a MapperAgent instance from a ConfigManager.
+    Factory function to create a Mapper instance from a ConfigManager.
     Supports local vLLM deployments and extensive ChatOpenAI settings.
     """
 
@@ -172,7 +175,7 @@ def mapper_agent(config_manager: ConfigManager) -> MapperAgent:
         resolver_agent_2 = create_openai_component(RateLimitedChatOpenAI, config_manager, "mapping.lexical_resolution")
         resolver_agent_3 = create_openai_component(RateLimitedChatOpenAI, config_manager, "mapping.semantic_resolution")
 
-    return MapperAgent(
+    return Mapper(
         discoverer=create_openai_component(RateLimitedChatOpenAI, config_manager, "mapping.discovery"),
         extractor=create_openai_component(RateLimitedChatOpenAI, config_manager, "mapping.extraction"),
         embedder=create_openai_component(RateLimitedOpenAIEmbeddings, config_manager, "mapping.embedding"),

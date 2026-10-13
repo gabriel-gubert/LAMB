@@ -63,7 +63,7 @@ class MigrationRule:
             has_target = any([m.new_namespace, m.new_class_interface, m.new_member])
 
             if self.complexity == Complexity.DEPRECATED or not has_target:
-                rule_block += "- Target Destination: DEPRECATED / REMOVED (No replacement entity in target version)\n"
+                rule_block += "    - Target Destination: DEPRECATED / REMOVED (No replacement entity in target version)\n"
             else:
                 dest_parts = [p for p in [m.new_namespace, m.new_class_interface] if p]
                 dest = f"{'.'.join(dest_parts)}" if dest_parts else ""
@@ -71,15 +71,15 @@ class MigrationRule:
                 if m.new_member:
                     dest = f"`{dest}.{m.new_member}`" if dest else f"`{m.new_member}`"
 
-                rule_block += f"- Target Destination: {dest}\n"
+                rule_block += f"    - Target Destination: {dest}\n"
 
             if m.new_signature:
-                rule_block += f"  - Signature: `{m.new_signature}`\n"
+                rule_block += f"        - Signature: `{m.new_signature}`\n"
 
             additional_notes = m.additional_notes
 
             if additional_notes:
-                rule_block += f"  - Additional Notes: {additional_notes}\n"
+                rule_block += f"        - Additional Notes: {additional_notes}\n"
 
         return rule_block.strip()
 

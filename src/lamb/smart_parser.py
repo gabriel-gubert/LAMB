@@ -18,7 +18,7 @@ from .output_templates import (
     ExternalVariableInference,
     TypeInferenceResult
 )
-from .prompt_templates import (
+from .prompts import (
     get_language_prompt,
     get_parse_prompt,
     get_type_inference_prompt,
