@@ -22,7 +22,7 @@ from .confidence import (
     TokenLogprob, 
     GlobalConfidenceReport
 )
-from .output_templates import (
+from .structured_outputs import (
     MappingRow,
     ExternalVariableInference,
     MigrationPlanSchema,

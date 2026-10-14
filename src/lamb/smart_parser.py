@@ -12,7 +12,7 @@ from .logger import (
     log_error
 )
 from .rate_limited_chat import RateLimitedChatOpenAI
-from .output_templates import (
+from .structured_outputs import (
     Language,
     ParserResult,
     ExternalVariableInference,
