@@ -45,7 +45,7 @@ from .rate_limited_chat import (
     RateLimitedChatOpenAI,
     RateLimitedOpenAIEmbeddings
 )
-from .output_templates import (
+from .structured_outputs import (
     ElementsExtraction,
     MappingRow,
     ResolutionResult,
@@ -1421,39 +1421,43 @@ class Mapper:
 
 
     @staticmethod
-    def _calculate_row_entropy_weights(tensor_5d: np.ndarray) -> np.ndarray:
-        """Fully vectorized row-wise feature weight allocation based on Shannon entropy."""
-
+    def _calculate_entropy_weights(tensor_5d: np.ndarray, axis: int = 1) -> np.ndarray:
+        """
+        Calculates feature weights allocation based on Shannon entropy along a specified axis.
+        axis=1 -> Row-wise weights (shape: N_v1 x N_features)
+        axis=0 -> Column-wise weights (shape: N_v2 x N_features)
+        """
         n_v1, n_v2, n_features = tensor_5d.shape
+        n_targets = n_v2 if axis == 1 else n_v1
 
-        if n_v2 <= 1:
-            return np.full((n_v1, n_features), 1.0 / n_features, dtype=np.float32)
+        if n_targets <= 1:
+            out_shape = (n_v1, n_features) if axis == 1 else (n_v2, n_features)
+            return np.full(out_shape, 1.0 / n_features, dtype=np.float32)
 
-        col_sums = np.sum(tensor_5d, axis=1, keepdims=True)
-        probs = np.divide(tensor_5d, col_sums, out=np.zeros_like(tensor_5d), where=col_sums > 1e-6)
+        sums = np.sum(tensor_5d, axis=axis, keepdims=True)
+        probs = np.divide(tensor_5d, sums, out=np.zeros_like(tensor_5d), where=sums > 1e-6)
 
-        # Compute Shannon Entropy
-        log_probs = np.zeros_like(probs)
         nonzero_mask = probs > 0
+        log_probs = np.zeros_like(probs)
         log_probs[nonzero_mask] = np.log2(probs[nonzero_mask])
-        entropy = -np.sum(probs * log_probs, axis=1)
+        entropy = -np.sum(probs * log_probs, axis=axis)
 
-        max_entropy = np.log2(n_v2)
+        max_entropy = np.log2(n_targets)
         norm_entropy = entropy / max_entropy if max_entropy > 0 else 1.0
         sharpness = 1.0 - norm_entropy
 
-        sharpness_sums = np.sum(sharpness, axis=1, keepdims=True)
+        sharpness_sums = np.sum(sharpness, axis=-1, keepdims=True)
         uniform_fallback = np.full_like(sharpness, 1.0 / n_features)
 
         return np.divide(sharpness, sharpness_sums, out=uniform_fallback, where=sharpness_sums > 1e-6)
 
 
-    def _compute_similarity_matrix(
+    def _compute_dual_similarity_matrices(
             self, 
             v1_elements: List[dict], 
             v2_elements: List[dict], 
             candidate_map: Dict[int, List[int]]
-        ) -> np.ndarray:
+        ) -> Tuple[np.ndarray, np.ndarray]:
             if self.verbose:
                 print("    -> Computing Similarity Matrix...", file=sys.stderr)
 
@@ -1513,12 +1517,18 @@ class Mapper:
             tensor_5d *= effective_mask[:, :, np.newaxis]
 
             # 6. Calculate Per-Row Dynamic Weights via Shannon Entropy
-            weights = self._calculate_row_entropy_weights(tensor_5d)
+
+            # Row-wise weights (N_v1 x 5)
+            row_weights = self._calculate_entropy_weights(tensor_5d, axis=1)
+
+            # Column-wise weights (N_v2 x 5)
+            col_weights = self._calculate_entropy_weights(tensor_5d, axis=0)
 
             # 7. Compute Uncollapsed Base Similarity Matrix via Vectorized Tensor Multiplication
-            base_sim_matrix = np.einsum('ijf,if->ij', tensor_5d, weights)
+            row_sim = np.einsum('ijf,if->ij', tensor_5d, row_weights)
+            col_sim = np.einsum('ijf,jf->ij', tensor_5d, col_weights)
 
-            return base_sim_matrix.astype(np.float32)
+            return row_sim.astype(np.float32), col_sim.astype(np.float32)
 
 
     def _convert_sim_matrix_to_json(self, sim_matrix: np.ndarray, v1_elements: List[dict], v2_elements: List[dict]) -> dict:
@@ -1531,20 +1541,40 @@ class Mapper:
         }
 
 
-    def _compute_modified_z_matrix(self, sim_matrix: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _compute_modified_z_matrix(self, sim_matrix: np.ndarray, axis: int = 1) -> np.ndarray:
         n_v1, n_v2 = sim_matrix.shape
 
         if n_v1 == 0 or n_v2 == 0:
             return np.empty((n_v1, n_v2)), np.array([]), np.array([])
 
-        row_medians = np.median(sim_matrix, axis=1, keepdims=True)
-        abs_deviations = np.abs(sim_matrix - row_medians)
-        row_mads = np.median(abs_deviations, axis=1, keepdims=True)
+        medians = np.median(sim_matrix, axis=axis, keepdims=True)
+        abs_deviations = np.abs(sim_matrix - medians)
+        mads = np.median(abs_deviations, axis=axis, keepdims=True)
 
-        mad_stabilizers = np.maximum(row_mads, 0.08) if n_v2 >= 5 else np.full_like(row_mads, fill_value=0.10)
-        z_matrix = (0.6745 * (sim_matrix - row_medians)) / mad_stabilizers
+        mad_stabilizers = np.maximum(mads, 0.08) if n_v2 >= 5 else np.full_like(mads, fill_value=0.10)
+        z_matrix = (0.6745 * (sim_matrix - medians)) / mad_stabilizers
 
-        return z_matrix, row_medians.squeeze(axis=-1), mad_stabilizers.squeeze(axis=-1)
+        return z_matrix.astype(np.float32)
+
+
+    def _compute_cross_score_matrix(self, row_z: np.ndarray, col_z: np.ndarray, floor: float = 0.0) -> np.ndarray:
+        """
+        Combines Row Z-score and Column Z-score using Harmonic Mean for positive Z-scores.
+        Harmonic Mean enforces that BOTH row and column must express strong confidence.
+        """
+
+        # Shift Z-scores relative to floor to avoid division by zero or negative values
+        r = np.maximum(0.0, row_z - floor)
+        c = np.maximum(0.0, col_z - floor)
+
+        sum_rc = r + c
+        cross_z = np.zeros_like(row_z)
+        
+        # Harmonic mean formula: 2 * (r * c) / (r + c) + floor
+        nonzero_mask = sum_rc > 1e-6
+        cross_z[nonzero_mask] = floor + (2.0 * r[nonzero_mask] * c[nonzero_mask]) / sum_rc[nonzero_mask]
+
+        return cross_z.astype(np.float32)
 
 
     def _retrieve_candidate_pairs(self, v1_elements: List[dict], v2_elements: List[dict], top_k: int = 30) -> Dict[int, List[int]]:
@@ -1639,7 +1669,7 @@ class Mapper:
         return candidate_map
 
 
-    def _initial_semantic_match(self, v1_elements: List[dict], v2_elements: List[dict], z_matrix: np.ndarray) -> Tuple[List[Any], List[dict]]:
+    def _initial_semantic_match(self, v1_elements: List[dict], v2_elements: List[dict], row_z: np.ndarray, col_z: np.ndarray, cross_z: np.ndarray) -> Tuple[List[Any], List[dict]]:
         matches = []
         resolution_queue = []
 
@@ -1647,37 +1677,57 @@ class Mapper:
         dynamic_threshold = 3.5
         dynamic_margin = 1.0
 
-        for v1_indices, z_scores in enumerate(z_matrix):
+        for v1_indices, cross_scores in enumerate(cross_z):
             v1_element = v1_elements[v1_indices]
 
-            valid_indices = np.where(z_scores >= dynamic_floor)[0]
+            valid_indices = np.where(cross_scores >= dynamic_floor)[0]
 
             if len(valid_indices) == 0:
                 resolution_queue.append({"v1_element": v1_element, "potential_targets": []})
 
                 continue
 
-            sorted_indices = valid_indices[np.argsort(-z_scores[valid_indices])]
-            candidates = [{"z_score": float(z_scores[index]), "element": v2_elements[index], "v2_index": int(index)} for index in sorted_indices]
+            sorted_indices = valid_indices[np.argsort(-cross_scores[valid_indices])]
+            candidates = [
+                {
+                    "cross_score": float(cross_scores[index]),
+                    "row_z": float(row_z[v1_indices, index]),
+                    "col_z": float(col_z[v1_indices, index]),
+                    "element": v2_elements[index],
+                    "v2_index": int(index)
+                }
+                for index in sorted_indices
+            ]
 
-            top_z_score = candidates[0]['z_score']
-            is_very_high_conf = top_z_score >= dynamic_threshold
-            has_clear_gap = len(candidates) == 1 or (top_z_score - candidates[1]['z_score'] > dynamic_margin)
+            top_cand = candidates[0]
+            top_cross_score = top_cand['cross_score']
+            is_high_conf = top_cross_score >= dynamic_threshold
+            has_clear_gap = len(candidates) == 1 or (top_cross_score - candidates[1]['cross_score'] > dynamic_margin)
 
-            if is_very_high_conf and has_clear_gap:
-                matches.append((v1_element, [candidates[0]]))
-            elif is_very_high_conf:
+            # Check if the target column also considers this row to be its top choice (Bidirectional Peak)
+            is_mutual_best = (v1_indices == np.argmax(cross_z[:, top_cand['v2_index']]))
+
+            if is_high_conf and (has_clear_gap or is_mutual_best):
+                matches.append((v1_element, [top_cand]))
+            elif is_high_conf:
                 match_targets = [
                     candidate for candidate in candidates 
-                    if candidate['z_score'] >= dynamic_threshold and (top_z_score - candidate['z_score'] <= dynamic_margin)
+                    if candidate['cross_score'] >= dynamic_threshold
+                    and (top_cross_score - candidate['cross_score'] <= dynamic_margin)
                 ]
 
                 if match_targets:
                     matches.append((v1_element, match_targets))
                 else:
-                    resolution_queue.append({"v1_element": v1_element, "potential_targets": [candidate["element"] for candidate in candidates]})
+                    resolution_queue.append({
+                        "v1_element": v1_element,
+                        "potential_targets": [candidate["element"] for candidate in candidates]
+                    })
             else:
-                resolution_queue.append({"v1_element": v1_element, "potential_targets": [candidate["element"] for candidate in candidates]})
+                resolution_queue.append({
+                    "v1_element": v1_element,
+                    "potential_targets": [candidate["element"] for candidate in candidates]
+                })
 
         v2_usage_count = defaultdict(int)
 
@@ -1722,23 +1772,25 @@ class Mapper:
             
         candidate_map = self._retrieve_candidate_pairs(v1_elements, v2_elements, top_k=30)
 
-        if self.verbose:
-            log_info("    -> Computing 5D Feature Vectors & Entropy Base Scores...")
+        # 1. Dual Entropy Weighted Similarities
+        row_sim, col_sim = self._compute_dual_similarity_matrices(v1_elements, v2_elements, candidate_map)
 
-        sim_matrix = self._compute_similarity_matrix(v1_elements, v2_elements, candidate_map)
+        # 2. Dual Z-Score Computation
+        row_z = self._compute_modified_z_matrix(row_sim, axis=1)
+        col_z = self._compute_modified_z_matrix(col_sim, axis=0)
 
-        if self.verbose:
-            log_info("    -> Evaluating Local Z-Scores & Routing Mappings...")
+        # 3. Joint Cross-Score Matrix
+        cross_z = self._compute_cross_score_matrix(row_z, col_z, floor=0.0)
 
-        z_matrix, _, _ = self._compute_modified_z_matrix(sim_matrix)
-        preliminary_rows, resolution_queue = self._initial_semantic_match(v1_elements, v2_elements, z_matrix)
+        # 4. Matching Decisions
+        preliminary_rows, resolution_queue = self._initial_semantic_match(
+            v1_elements, v2_elements, row_z, col_z, cross_z
+        )
 
-        # Convert matrices and save stage outputs
-        sim_matrix_json = self._convert_sim_matrix_to_json(sim_matrix, v1_elements, v2_elements)
-        z_matrix_json = self._convert_sim_matrix_to_json(z_matrix, v1_elements, v2_elements)
-
-        self._save_stage_output("similarity_matrix", sim_matrix_json)
-        self._save_stage_output("z_matrix", z_matrix_json)
+        # Save outputs
+        # self._save_stage_output("row_z_matrix", self._convert_sim_matrix_to_json(row_z, v1_elements, v2_elements))
+        # self._save_stage_output("col_z_matrix", self._convert_sim_matrix_to_json(col_z, v1_elements, v2_elements))
+        # self._save_stage_output("cross_z_matrix", self._convert_sim_matrix_to_json(cross_z, v1_elements, v2_elements))
 
         result = {
             "initial_mappings": [row.model_dump() if hasattr(row, 'model_dump') else row for row in preliminary_rows],
