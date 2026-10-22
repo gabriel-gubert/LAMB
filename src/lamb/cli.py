@@ -176,6 +176,23 @@ def _get_dest_from_flags(flags, kwargs):
     return flags[0].replace('-', '_')
 
 
+def _normalize_agent_entry(agent):
+    """
+    Returns (name, config_path, display_name) for an agent entry.
+    Supports either a dict (with 'name' and 'config_path') or a dot-notated string.
+    """
+    if isinstance(agent, dict):
+        name = agent["name"]
+        config_path = agent["config_path"]
+        display_name = agent.get("display_name", name.replace('_', ' ').title())
+    else:
+        config_path = str(agent)
+        name = config_path.split('.')[-1]
+        display_name = name.replace('_', ' ').title()
+
+    return name, config_path, display_name
+
+
 def apply_cli_overrides(args: argparse.Namespace, cm: ConfigManager, command: str):
     """
     Dynamically routes parsed arguments to their exact ConfigManager dot-paths
@@ -207,7 +224,8 @@ def apply_cli_overrides(args: argparse.Namespace, cm: ConfigManager, command: st
     agents = cmd_schema.get("agents", [])
 
     for agent in agents:
-        dest = f"configure_{agent.replace('-', '_')}"
+        name, config_path, display_name = _normalize_agent_entry(agent)
+        dest = f"configure_{name}"
         val = getattr(args, dest, None)
 
         if val is not None:
@@ -216,13 +234,13 @@ def apply_cli_overrides(args: argparse.Namespace, cm: ConfigManager, command: st
 
                 if isinstance(overrides, dict):
                     for k, v in overrides.items():
-                        cm.apply_override(f"{agent}.{k}", v)
+                        cm.apply_override(f"{config_path}.{k}", v)
                 else:
-                    log_error(f"Configuration for Agent '{agent.split('.')[-1].title()}' must be a JSON Object/Dictionary.")
+                    log_error(f"Configuration for Agent '{display_name}' must be a JSON Object/Dictionary.")
 
                     sys.exit(1)
             except Exception as e:
-                log_error(f"Failed to Parse Configuration for Agent '{agent.split('.')[-1].title()}': {e}.")
+                log_error(f"Failed to Parse Configuration for Agent '{display_name}': {e}.")
 
                 sys.exit(1)
 
@@ -450,8 +468,16 @@ def main():
         if "agents" in cmd_data:
             spec_group = cmd_parser.add_argument_group('Agent Configuration Options')
             for agent in cmd_data["agents"]:
-                cli_flag = f"--configure-{agent.replace('_', '-')}"
-                spec_group.add_argument(cli_flag, type=str, help=f"JSON String or Path to JSON File to Configure the {agent.replace('_', ' ').title()} Agent.")
+                name, config_path, display_name = _normalize_agent_entry(agent)
+                cli_flag = f"--configure-{name.replace('_', '-')}"
+                dest = f"configure_{name}"
+
+                spec_group.add_argument(
+                    cli_flag,
+                    dest=dest,
+                    type=str,
+                    help=f"JSON String or Path to JSON File to Configure the {display_name} Agent."
+                )
 
     args = parser.parse_args()
 

@@ -56,9 +56,9 @@ class ConfigSchema:
                 {"flags": ["--logprobs"], "kwargs": {"action": "store_true", "help": "Uses model log probabilities to improve score calculations."}, "config_path": "tasks.migration.logprobs"}
             ],
             "agents": [
-                "tasks.migration.migration",
-                "tasks.migration.summarization",
-                "tasks.migration.detection"
+                {"name": "migration", "config_path": "tasks.migration.migration"},
+                {"name": "summarization", "config_path": "tasks.migration.summarization"},
+                {"name": "detection", "config_path": "tasks.migration.detection"}
             ]
         },
         "map": {
@@ -80,12 +80,12 @@ class ConfigSchema:
                 {"flags": ["--tmp-dir"], "kwargs": {"help": "Override the Path to the TEMP File Directory. Defaults to \"~/.lamb/tmp\"."}, "config_path": "tasks.mapping.tmp_dir"}
             ],
             "agents": [
-                "tasks.mapping.extraction",
-                "tasks.mapping.discovery",
-                "tasks.mapping.embedding",
-                "tasks.mapping.general_resolution",
-                "tasks.mapping.lexical_resolution",
-                "tasks.mapping.semantic_resolution"
+                {"name": "extraction", "config_path": "tasks.mapping.extraction"},
+                {"name": "discovery", "config_path": "tasks.mapping.discovery"},
+                {"name": "embedding", "config_path": "tasks.mapping.embedding"},
+                {"name": "general_resolution", "config_path": "tasks.mapping.general_resolution"},
+                {"name": "lexical_resolution", "config_path": "tasks.mapping.lexical_resolution"},
+                {"name": "semantic_resolution", "config_path": "tasks.mapping.semantic_resolution"}
             ]
         }
     }

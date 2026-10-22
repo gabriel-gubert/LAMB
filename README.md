@@ -52,6 +52,7 @@ View and edit your settings seamlessly from the command line.
 ```bash
 lamb config --list
 lamb config --global general.verbose true
+lamb config tasks.migration.migration.model gemini-1.5-flash
 
 ```
 
@@ -59,112 +60,213 @@ lamb config --global general.verbose true
 
 ## Configuration Architecture
 
-LAMB features a highly granular, 4-tier cascading configuration system. Settings are resolved in the following priority order (1 being the highest):
+LAMB features a granular, cascading configuration system. Settings are resolved in the following priority order (1 being the highest):
 
-1. **Specific Agent CLI Flags:** (e.g., `--migration-model o1`)
-2. **General CLI Flags:** (e.g., `--model gpt-4o`)
-3. **Local Config File:** `./.lambconfig.toml` (Project-specific)
-4. **Global Config File:** `~/.lamb/config.toml` (User-wide)
+1. **CLI Flags & Overrides:**
+   - Agent Configuration Options (`--configure-<agent>`)
+   - Command Tuning Settings / Overrides (e.g., `--summarization-threshold`, `--multi-agent`, `--resolver-batch-size`)
+   - Global Config Flags (e.g., `--verbose`, `--litellm-port`)
+2. **Local Config File:** `./.lambconfig.toml` (Project-specific)
+3. **Global Config File:** `~/.lamb/config.toml` (User-wide)
+
+Within configuration files, agent parameters cascade hierarchically:
+`tasks.<agent>` (e.g., `tasks.migration.migration`) &rarr; `tasks.default` &rarr; `general`.
 
 ---
 
 ## Exhaustive Configuration Reference
 
-Every setting in LAMB can be defined in the TOML files or overridden via CLI flags.
+Every setting in LAMB can be defined in TOML configuration files or overridden via CLI flags.
 
-### 1. Global & Tuning Settings
+### 1. Global Configuration Flags
 
-These settings control the application's verbosity and internal algorithm thresholds.
+These flags control global application behavior and proxy networking across commands.
 
 | TOML Key Path | CLI Flag | Type | Default | Description |
 | --- | --- | --- | --- | --- |
-| `general.verbose` | `--verbose` | Boolean | `None` | Enables detailed logging for prompt payloads and agent reasoning. |
-| `tasks.migration.summarization_threshold` | `--summarization-threshold` | Integer | `2048` | Max character length of legacy documentation before the summarizer agent is invoked. |
-| `tasks.mapping.multi_agent` | `--multi-agent` | Boolean | `True` | Whether or not to use multiple agent consensus. |
-| `tasks.mapping.confidence_threshold` | `--confidence-threshold` | Float | `0.92` | Minimum similarity score required to auto-map elements without the resolution agent. |
-| `tasks.mapping.confidence_floor` | `--confidence-floor` | Float | `0.65` | Minimum similarity score required not to discard an element as a potential mapping target. |
-| `tasks.mapping.ambiguous_margin` | `--ambiguous-margin` | Float | `0.05` | Score margin that triggers the resolution agent to decide between competing mappings. |
-| `tasks.mapping.resolver_batch_size` | `--resolver-batch-size` | Integer | `20` | Number of conflicts passed to the resolution agent in a single LLM prompt. |
+| `general.verbose` | `--verbose` | Boolean | `None` | Enable Verbose Output. |
+| `general.litellm.host` | `--litellm-host` | String | `"127.0.0.1"` | Override LiteLLM Proxy Host IP. |
+| `general.litellm.port` | `--litellm-port` | Integer | `4000` | Override LiteLLM Proxy Port. |
+| `general.litellm.config_file` | `--litellm-config-file` | String | `None` | Path to Custom LiteLLM Proxy YAML Config File. |
+| `general.litellm.enabled` | `--disable-litellm` | Boolean | `True` | Disable LiteLLM Proxy globally. |
 
-### 2. Shared LLM & Generation Parameters
+### 2. Command Reference & Tuning Settings
 
-These parameters configure the primary LLM connection and generation behavior for all agents.
+#### `lamb migrate`
 
-| TOML Key Path (under `tasks.default`) | General CLI Flag | Type | Default | Description |
+Migrate Source Code from a Source Version to a Target Version of a Library/SDK/API based on a Mapping Table.
+
+**Command Arguments:**
+
+| Argument / Flag | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `--model` | String | `gpt-4o` | Model ID (e.g., `gpt-4o`, `o3-mini`). |
-| `api_key` | `--api-key` | String | `None` | Authentication key. |
-| `base_url` | `--base-url` | String | `None` | Custom endpoint URL for local APIs. |
-| `organization` | `--organization` | String | `None` | Organization ID for API requests. |
-| `temperature` | `--temperature` | Float | `0.7` | Sampling temperature (0.0 to 1.0). |
-| `max_tokens` | `--max-tokens` | Integer | `None` | Maximum tokens generated in the response. |
-| `top_p` | `--top-p` | Float | `None` | Nucleus sampling probability mass. |
-| `frequency_penalty` | `--frequency-penalty` | Float | `None` | Penalty for token frequency (prevents repetition). |
-| `presence_penalty` | `--presence-penalty` | Float | `None` | Penalty for token presence (encourages new topics). |
-| `n` | `--n` | Integer | `1` | Number of chat completions to generate. |
-| `seed` | `--seed` | Integer | `None` | Integer for deterministic sampling. |
-| `stop` | `--stop` | List | `None` | List of strings to stop generation. |
-| `logprobs` | `--logprobs` | Boolean | `None` | Whether to return log probabilities. |
-| `top_logprobs` | `--top-logprobs` | Integer | `None` | Number of logprobs to return. |
-| `logit_bias` | `--logit-bias` | Dict | `None` | Modify likelihood of specific tokens. |
+| `-f`, `--file` | String | No | `stdin` | Legacy Code File (defaults to stdin). |
+| `-o`, `--output` | String | No | `stdout` | Output Path to the Migrated Code (e.g., `./code_v2.cpp`). |
+| `--alias` | String | **Yes** | — | Alias of the Mapping Table Alias to use. |
+| `--critical` | List[String] | No | `[]` | List of highlight ranges (e.g., `'14:12-14:34'` `'14-18'` `'foo()'`) tagged as CRITICAL priority. |
+| `--warning` | List[String] | No | `[]` | List of highlight ranges (e.g., `'14:12-14:34'` `'14-18'` `'bar()'`) tagged as WARNING priority. |
+| `--info` | List[String] | No | `[]` | List of highlight ranges (e.g., `'14:12-14:34'` `'14-18'` `'baz()'`) tagged as INFO priority. |
+| `--dont-touch` | List[String] | No | `[]` | List of protected ranges (e.g., `'14:12-14:34'` `'14-18'` `'qux()'`) tagged as DONT_TOUCH priority to prevent modification. |
+| `--user-comments` | String | No | `""` | Custom developer migration instructions or notes. |
 
-### 3. Embedding Specific Parameters
+**Tuning Settings (Config Overrides):**
 
-Used specifically by the **Embedding Agent** during the mapping phase.
-
-| TOML Key Path (under `tasks.embedding`) | CLI Flag | Type | Default | Description |
+| TOML Key Path | CLI Flag | Type | Default | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `--embedding-model` | String | `text-embedding-3-small` | Embedding model ID. |
-| `dimensions` | `--embedding-dimensions` | Integer | `None` | Explicitly set output dimensions. |
-| `chunk_size` | `--embedding-chunk-size` | Integer | `1000` | Number of texts to embed in a single batch. |
-| `skip_empty` | `--embedding-skip-empty` | Boolean | `False` | Drop empty strings from the input. |
-| `show_progress_bar` | `--embedding-show-progress-bar` | Boolean | `False` | Track large bulk embeddings. |
+| `tasks.migration.summarization_threshold` | `--summarization-threshold` | Integer | `2048` | Override Token Threshold for Summarization. |
+| `tasks.migration.max_attempts` | `--max-attempts` | Integer | `3` | Override Maximum Number of Migration Attempts. |
+| `tasks.migration.report` | `--report` | String | `None` | File path to save the migration confidence and audit report JSON. |
+| `tasks.migration.logprobs` | `--logprobs` | Boolean | `False` | Uses model log probabilities to improve score calculations. |
 
-### 4. Connection & Advanced Kwargs
+#### `lamb map`
 
-Low-level settings for connection handling and tokenization.
+Generate the Mapping Table from a Source Version to a Target Version of a Library/SDK/API based on Codebase/Documentation.
 
-| TOML Key Path (under `tasks.default`) | CLI Flag | Type | Default | Description |
+**Command Arguments:**
+
+| Argument / Flag | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `timeout` | `--timeout` | Integer | `None` | API request timeout in seconds. |
-| `max_retries` | `--max-retries` | Integer | `2` | Maximum retry attempts for failed API calls. |
-| `streaming` | `--streaming` | Boolean | `False` | Enable real-time token streaming. |
-| `tiktoken_enabled` | `--tiktoken-enabled` | Boolean | `True` | Enable local token counting. |
-| `tiktoken_model_name` | `--tiktoken-model-name` | String | `None` | Override for token counting model. |
-| `model_kwargs` | N/A | Dict | `None` | Extra parameters for the provider. |
-| `default_headers` | N/A | Dict | `None` | Custom HTTP headers. |
-| `default_query` | N/A | Dict | `None` | Custom URL query parameters. |
+| `path_v1` | String | **Yes** | — | Path to the Source Version Codebase/Documentation Root Directory. |
+| `path_v2` | String | **Yes** | — | Path to the Target Version Codebase/Documentation Root Directory. |
+| `--alias` | String | **Yes** | — | Alias for the Mapping Table. |
+| `--thread-id` | String | No | `""` | Identificator for the CURRENT Mapper Agent Run. Used to SAVE/LOAD LangGraph's Checkpoints TO/FROM the SQLite 3 Database File. |
+| `-o`, `--output` | String | No | `None` | Output Path of the Mapping Table (e.g., `./SynthNetLib.json`). |
+
+**Tuning Settings (Config Overrides):**
+
+| TOML Key Path | CLI Flag | Type | Default | Description |
+| --- | --- | --- | --- | --- |
+| `tasks.mapping.multi_agent` | `--multi-agent` | Boolean | `False` | Enable Multi-Agent Consensus Resolution. |
+| `tasks.mapping.multi_agent` | `--no-multi-agent` | Boolean | `False` | Disable Multi-Agent Consensus Resolution. |
+| `tasks.mapping.resolver_batch_size` | `--resolver-batch-size` | Integer | `20` | Override Resolver Agent Batch Size. |
+| `tasks.mapping.discovery_batch_size` | `--discovery-batch-size` | Integer | `20` | Override the Discovery Agent Batch Size. |
+| `tasks.mapping.stage_output_dir` | `--stage-output-dir` | String | `None` | Override Stage Output Directory. |
+| `tasks.mapping.checkpoint_database_path` | `--checkpoint-database-path` | String | `"~/.lamb/map_checkpoint.db"` | Override the Path to the SQLite 3 Database File to use for LangGraph's Checkpoints. |
+| `tasks.mapping.tmp_dir` | `--tmp-dir` | String | `"~/.lamb/tmp"` | Override the Path to the TEMP File Directory. |
+
+#### `lamb config`
+
+Manage configuration (git-style).
+
+**Command Arguments:**
+
+| Argument / Flag | Type | Required | Description |
+| --- | --- | --- | --- |
+| `--global` | Flag | No | Edit Global Configuration File (`~/.lamb/config.toml`). |
+| `--list` | Flag | No | List ALL Key-Value Configuration Pairs from both Global and Local Configuration Files. |
+| `key` | String | No | Configuration Key (e.g., `tasks.migration.migration.model`). |
+| `value` | String | No | Configuration Value (e.g., `"gemini-1.5-flash"`). |
 
 ---
 
-## Agent-Specific Overrides
+## Agent Configuration Options
 
-To optimize for cost or reasoning, you can target individual agents. Every parameter in sections 2, 3, and 4 can be prefixed with the agent name.
+Each command supports configuring its constituent agents via kebab-case `--configure-<agent>` CLI flags, which accept either an inline JSON string or a path to a JSON file.
 
-#### Map Command Agents
+### Migrate Command Agents
 
-* **`--extraction-<param>`**: Configuration for code structural data extraction.
-* **`--embedding-<param>`**: Configuration for vectorization (uses embedding defaults).
-* **`--resolution-<param>`**: Configuration for the conflict-resolution logic.
+* **`--configure-migration`**: JSON string or path to JSON file to configure the Migration agent (`tasks.migration.migration`).
+* **`--configure-summarization`**: JSON string or path to JSON file to configure the Summarization agent (`tasks.migration.summarization`).
+* **`--configure-detection`**: JSON string or path to JSON file to configure the Detection agent (`tasks.migration.detection`).
 
-#### Migrate Command Agents
+### Map Command Agents
 
-* **`--detection-<param>`**: Configuration for legacy pattern identification.
-* **`--summarization-<param>`**: Configuration for document compression.
-* **`--migration-<param>`**: Configuration for the core generation agent.
+* **`--configure-extraction`**: JSON string or path to JSON file to configure the Extraction agent (`tasks.mapping.extraction`).
+* **`--configure-discovery`**: JSON string or path to JSON file to configure the Discovery agent (`tasks.mapping.discovery`).
+* **`--configure-embedding`**: JSON string or path to JSON file to configure the Embedding agent (`tasks.mapping.embedding`).
+* **`--configure-general-resolution`**: JSON string or path to JSON file to configure the General Resolution agent (`tasks.mapping.general_resolution`).
+* **`--configure-lexical-resolution`**: JSON string or path to JSON file to configure the Lexical Resolution agent (`tasks.mapping.lexical_resolution`).
+* **`--configure-semantic-resolution`**: JSON string or path to JSON file to configure the Semantic Resolution agent (`tasks.mapping.semantic_resolution`).
+
+---
+
+## TOML Configuration Reference (LLM & Agent Parameters)
+
+In addition to CLI flags, agents can be configured via TOML configuration files (`.lambconfig.toml` or `~/.lamb/config.toml`). Default settings apply under `[tasks.default]`, while individual agents are configured under their respective sections (e.g., `[tasks.migration.migration]` or `[tasks.mapping.embedding]`).
+
+### 1. Shared LLM & Generation Parameters
+
+These parameters configure the LLM connection and generation behavior across agents.
+
+| TOML Key Path (under `tasks.default` or agent section) | Type | Default | Description |
+| --- | --- | --- | --- |
+| `model` | String | `gpt-4o` | Model ID (e.g., `gpt-4o`, `o3-mini`). |
+| `api_key` | String | `None` | Authentication key. |
+| `base_url` | String | `None` | Custom endpoint URL for local APIs. |
+| `organization` | String | `None` | Organization ID for API requests. |
+| `temperature` | Float | `0.7` | Sampling temperature (0.0 to 1.0). |
+| `max_tokens` | Integer | `None` | Maximum tokens generated in the response. |
+| `top_p` | Float | `None` | Nucleus sampling probability mass. |
+| `frequency_penalty` | Float | `None` | Penalty for token frequency (prevents repetition). |
+| `presence_penalty` | Float | `None` | Penalty for token presence (encourages new topics). |
+| `n` | Integer | `1` | Number of chat completions to generate. |
+| `seed` | Integer | `None` | Integer for deterministic sampling. |
+| `stop` | List[String] | `None` | List of strings to stop generation. |
+| `logprobs` | Boolean | `None` | Whether to return log probabilities. |
+| `top_logprobs` | Integer | `None` | Number of logprobs to return. |
+| `logit_bias` | Dict | `None` | Modify likelihood of specific tokens. |
+
+### 2. Embedding Specific Parameters
+
+Used specifically by the **Embedding Agent** during the mapping phase under `[tasks.mapping.embedding]`.
+
+| TOML Key Path (under `tasks.mapping.embedding`) | Type | Default | Description |
+| --- | --- | --- | --- |
+| `model` | String | `text-embedding-3-small` | Embedding model ID. |
+| `dimensions` | Integer | `None` | Explicitly set output dimensions. |
+| `chunk_size` | Integer | `1000` | Number of texts to embed in a single batch. |
+| `skip_empty` | Boolean | `False` | Drop empty strings from the input. |
+| `show_progress_bar` | Boolean | `False` | Track large bulk embeddings. |
+
+### 3. Connection & Advanced Kwargs
+
+Low-level settings for connection handling and tokenization.
+
+| TOML Key Path (under `tasks.default` or agent section) | Type | Default | Description |
+| --- | --- | --- | --- |
+| `timeout` | Integer | `None` | API request timeout in seconds. |
+| `max_retries` | Integer | `2` | Maximum retry attempts for failed API calls. |
+| `streaming` | Boolean | `False` | Enable real-time token streaming. |
+| `tiktoken_enabled` | Boolean | `True` | Enable local token counting. |
+| `tiktoken_model_name` | String | `None` | Override for token counting model. |
+| `model_kwargs` | Dict | `None` | Extra parameters for the provider. |
+| `default_headers` | Dict | `None` | Custom HTTP headers. |
+| `default_query` | Dict | `None` | Custom URL query parameters. |
 
 ---
 
 ## Advanced Usage Example
 
+### Using CLI Flags
+
 ```bash
 lamb migrate -f core.cpp --alias v2_map \
-  --model gpt-4o-mini \
-  --migration-model o1 \
-  --migration-seed 42 \
-  --summarization-temperature 0.0 \
-  --summarization-stop "['END']"
+  --verbose \
+  --summarization-threshold 4096 \
+  --configure-migration '{"model": "o1", "seed": 42}' \
+  --configure-summarization '{"temperature": 0.0, "stop": ["END"]}'
+```
 
+### Using TOML Configuration
+
+```toml
+[general]
+verbose = true
+
+[tasks.default]
+model = "gpt-4o-mini"
+
+[tasks.migration]
+summarization_threshold = 4096
+max_attempts = 3
+
+[tasks.migration.migration]
+model = "o1"
+seed = 42
+
+[tasks.migration.summarization]
+temperature = 0.0
+stop = ["END"]
 ```
 
 ---
