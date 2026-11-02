@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from typing import Set, List, Dict, Any, Optional
 
 import tree_sitter_language_pack as tslp

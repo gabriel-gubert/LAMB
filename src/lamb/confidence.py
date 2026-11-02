@@ -1,5 +1,4 @@
 import math
-from dataclasses import dataclass, field
 from typing import List, Set, Optional, Union, Dict, Any, Tuple
 
 from .logger import (
@@ -20,11 +19,13 @@ from .types import (
     TokenLogprob
 )
 
+
 class DynamicConfidenceEvaluator:
     """
     Computes global and rule-snippet granular confidence scores. 
     Uses the parser strictly to inspect the presence of syntax errors.
     """
+
 
     @staticmethod
     def _dempster_combine(m1: float, m2: float) -> float:

@@ -2,6 +2,7 @@ import toml
 from pathlib import Path
 from typing import Any
 
+
 class ConfigManager:
     """
     Manages configuration with a hierarchy similar to git config:

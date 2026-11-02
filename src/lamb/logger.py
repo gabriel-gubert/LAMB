@@ -34,7 +34,7 @@ class ColorFormatter(logging.Formatter):
         return formatter.format(record)
 
 
-_logger = logging.getLogger("custom_colored_logger")
+_logger = logging.getLogger("LAMB Logger")
 _logger.setLevel(logging.INFO)
 
 if not _logger.handlers:
