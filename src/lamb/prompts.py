@@ -1,6 +1,7 @@
 from typing import Any, Optional, List, Tuple
 from pathlib import Path
 
+
 def get_template(file_name: str) -> str:
     """
     Reads and returns a prompt from a Markdown file.
@@ -17,7 +18,7 @@ def get_template(file_name: str) -> str:
 def get_language_prompt(supported_langs: list[str] = None) -> str:
     lang_list_str = ", ".join(supported_langs)
 
-    return get_template("MIGRATION_LANGUAGE_TEMPLATE.md").format(lang_list_str=lang_list_str).strip()
+    return get_template("MIGRATION_LANGUAGE_TEMPLATE.md").replace("{lang_list_str}", lang_list_str).strip()
 
 
 def get_parse_prompt() -> str:
@@ -27,7 +28,7 @@ def get_parse_prompt() -> str:
 def get_type_inference_prompt(mapping_table: Optional[List[Any]] = None) -> str:
     schema_str = f"\nMapping Table / Schema Context:\n{mapping_table}\n" if mapping_table else "\nMapping Table / Schema Context: None provided.\n"
 
-    return get_template("MIGRATION_TYPE_INFERENCE_TEMPLATE.md").format(schema_str=schema_str).strip()
+    return get_template("MIGRATION_TYPE_INFERENCE_TEMPLATE.md").replace("{schema_str}", schema_str).strip()
 
 
 def get_summarization_prompt() -> str:
@@ -78,17 +79,22 @@ def get_migration_planner_prompt(
     user_template = get_template("MIGRATION_PLANNER_USER_TEMPLATE.md")
 
     # 3. Format templates with inputs
-    system_prompt = system_template.format(
-        language=language,
-        priority_instructions_block=priority_instructions_block
+    system_prompt = system_template.replace(
+        "{language}", language
+    ).replace(
+        "{priority_instructions_block}", priority_instructions_block
     ).strip()
 
-    user_prompt = user_template.format(
-        language=language,
-        formatted_rules=formatted_rules,
-        priority_block=priority_block,
-        legacy_code_snippet=legacy_code_snippet,
-        user_instructions_block=user_instructions_block
+    user_prompt = user_template.replace(
+        "{language}", language
+    ).replace(
+        "{formatted_rules}", formatted_rules
+    ).replace(
+        "{priority_block}", priority_block
+    ).replace(
+        "{legacy_code_snippet}", legacy_code_snippet
+    ).replace(
+        "{user_instructions_block}", user_instructions_block
     ).strip()
 
     return system_prompt, user_prompt
@@ -133,19 +139,26 @@ def get_migration_prompt(
     system_template = get_template("MIGRATION_SYSTEM_TEMPLATE.md")
     user_template = get_template("MIGRATION_USER_TEMPLATE.md")
 
-    system_prompt = system_template.format(
-        language=language,
-        dont_touch_instructions=dont_touch_instructions
+    system_prompt = system_template.replace(
+        "{language}", language
+    ).replace(
+        "{dont_touch_instructions}", dont_touch_instructions
     ).strip()
 
-    user_prompt = user_template.format(
-        language=language,
-        formatted_rules=formatted_rules,
-        plan_block=plan_block,
-        priority_block=priority_block,
-        legacy_code_snippet=legacy_code_snippet,
-        user_instructions_block=user_instructions_block,
-        error_retry_block=error_retry_block
+    user_prompt = user_template.replace(
+        "{language}", language
+    ).replace(
+        "{formatted_rules}", formatted_rules
+    ).replace(
+        "{plan_block}", plan_block
+    ).replace(
+        "{priority_block}", priority_block
+    ).replace(
+        "{legacy_code_snippet}", legacy_code_snippet
+    ).replace(
+        "{user_instructions_block}", user_instructions_block
+    ).replace(
+        "{error_retry_block}", error_retry_block
     ).strip()
 
     return system_prompt, user_prompt
