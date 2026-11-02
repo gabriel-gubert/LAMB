@@ -236,13 +236,10 @@ class Migrator:
             return {"rules": []}
 
         grouped_by_old = defaultdict(list)
-        grouped_by_new = defaultdict(list)
 
         for row in matched_rows:
             old_key = (row['old_namespace'], row['old_class_interface'], row['old_member'])
-            new_key = (row['new_namespace'], row['new_class_interface'], row['new_member'])
             grouped_by_old[old_key].append(row)
-            grouped_by_new[new_key].append(row)
 
         rules = []
         for rule_id, (old_key, matches) in enumerate(grouped_by_old.items(), start=1):
@@ -264,45 +261,37 @@ class Migrator:
             if is_deprecated_rule:
                 complexity = Complexity.DEPRECATED
             else:
-                unique_targets = {
-                    (match['new_namespace'], match['new_class_interface'], match['new_member']) 
-                    for match in matches
-                }
+                complexity = None
 
-                is_n_to_1 = any(len(grouped_by_new[t]) > 1 for t in unique_targets)
+                for match in matches:
+                    raw_comp = match.get('complexity', '')
 
-                if len(unique_targets) == 1 and not is_n_to_1:
-                    complexity = Complexity.ONE_TO_ONE
-                elif len(unique_targets) > 1 and not is_n_to_1:
-                    complexity = Complexity.ONE_TO_MANY
-                elif len(unique_targets) == 1 and is_n_to_1:
-                    complexity = Complexity.MANY_TO_ONE
-                else:
-                    complexity = Complexity.MANY_TO_MANY
+                    if isinstance(raw_comp, Complexity):
+                        complexity = raw_comp
 
-            for match in matches:
-                match_complexity = match.get('complexity', '')
+                        break
+                    elif isinstance(raw_comp, str) and raw_comp.strip():
+                        val = raw_comp.strip()
 
-                if isinstance(match_complexity, Complexity):
-                    pass
-                elif isinstance(match_complexity, str) and match_complexity.strip():
-                    complexity_value = match_complexity.strip()
-
-                    try:
-                        match_complexity = Complexity(complexity_value)
-                    except ValueError:
                         try:
-                            match_complexity = Complexity[complexity_value.upper()]
-                        except KeyError:
-                            match_complexity = complexity_value
-                else:
-                    match_complexity = None
+                            complexity = Complexity(val)
 
-                if match_complexity and match_complexity != complexity:
-                    match_complexity_value = str(match_complexity.value if isinstance(match_complexity, Complexity) else match_complexity)
+                            break
+                        except ValueError:
+                            try:
+                                complexity = Complexity[val.upper()]
 
-                    if self.verbose:
-                        log_warn(f"Complexity Diverged from Mapping Table for Rule #{rule_id} (`{old_ns}.{old_cls}`): Mapping Table has '{match_complexity_value}', got '{complexity.value}'.")
+                                break
+                            except KeyError:
+                                pass
+
+                if not complexity:
+                    unique_targets = {
+                        (match['new_namespace'], match['new_class_interface'], match['new_member']) 
+                        for match in matches
+                    }
+
+                    complexity = Complexity.ONE_TO_MANY if len(unique_targets) > 1 else Complexity.ONE_TO_ONE
 
             match_mappings = [
                 MatchMapping(
