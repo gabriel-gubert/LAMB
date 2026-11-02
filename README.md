@@ -184,54 +184,27 @@ Each command supports configuring its constituent agents via kebab-case `--confi
 
 In addition to CLI flags, agents can be configured via TOML configuration files (`.lambconfig.toml` or `~/.lamb/config.toml`). Default settings apply under `[tasks.default]`, while individual agents are configured under their respective sections (e.g., `[tasks.migration.migration]` or `[tasks.mapping.embedding]`).
 
-### 1. Shared LLM & Generation Parameters
+LAMB instantiates agents using custom wrappers around LangChain components:
+- **`RateLimitedChatOpenAI`** (extends [`ChatOpenAI`](https://python.langchain.com/api_reference/openai/chat_models/langchain_openai.chat_models.base.ChatOpenAI.html)) for chat and code generation agents.
+- **`RateLimitedOpenAIEmbeddings`** (extends [`OpenAIEmbeddings`](https://python.langchain.com/api_reference/openai/embeddings/langchain_openai.embeddings.base.OpenAIEmbeddings.html)) for the mapping embedding agent (`[tasks.mapping.embedding]`).
 
-These parameters configure the LLM connection and generation behavior across agents.
+### 1. LangChain Native Parameters
 
-| TOML Key Path (under `tasks.default` or agent section) | Type | Default | Description |
-| --- | --- | --- | --- |
-| `model` | String | `gpt-4o` | Model ID (e.g., `gpt-4o`, `o3-mini`). |
-| `api_key` | String | `None` | Authentication key. |
-| `base_url` | String | `None` | Custom endpoint URL for local APIs. |
-| `organization` | String | `None` | Organization ID for API requests. |
-| `temperature` | Float | `0.7` | Sampling temperature (0.0 to 1.0). |
-| `max_tokens` | Integer | `None` | Maximum tokens generated in the response. |
-| `top_p` | Float | `None` | Nucleus sampling probability mass. |
-| `frequency_penalty` | Float | `None` | Penalty for token frequency (prevents repetition). |
-| `presence_penalty` | Float | `None` | Penalty for token presence (encourages new topics). |
-| `n` | Integer | `1` | Number of chat completions to generate. |
-| `seed` | Integer | `None` | Integer for deterministic sampling. |
-| `stop` | List[String] | `None` | List of strings to stop generation. |
-| `logprobs` | Boolean | `None` | Whether to return log probabilities. |
-| `top_logprobs` | Integer | `None` | Number of logprobs to return. |
-| `logit_bias` | Dict | `None` | Modify likelihood of specific tokens. |
+All standard LangChain parameters for `ChatOpenAI` (e.g., `model`, `temperature`, `api_key`, `base_url`, `organization`, `max_tokens`, `timeout`, `max_retries`, etc.) and `OpenAIEmbeddings` (e.g., `model`, `dimensions`, `chunk_size`, etc.) are natively supported and passed directly to the underlying LangChain classes. 
 
-### 2. Embedding Specific Parameters
+Please refer to LangChain's official documentation for parameter references and configuration options:
+* [LangChain `ChatOpenAI` Documentation](https://python.langchain.com/api_reference/openai/chat_models/langchain_openai.chat_models.base.ChatOpenAI.html)
+* [LangChain `OpenAIEmbeddings` Documentation](https://python.langchain.com/api_reference/openai/embeddings/langchain_openai.embeddings.base.OpenAIEmbeddings.html)
 
-Used specifically by the **Embedding Agent** during the mapping phase under `[tasks.mapping.embedding]`.
+### 2. Custom LAMB Rate-Limiting & Proxy Parameters
 
-| TOML Key Path (under `tasks.mapping.embedding`) | Type | Default | Description |
-| --- | --- | --- | --- |
-| `model` | String | `text-embedding-3-small` | Embedding model ID. |
-| `dimensions` | Integer | `None` | Explicitly set output dimensions. |
-| `chunk_size` | Integer | `1000` | Number of texts to embed in a single batch. |
-| `skip_empty` | Boolean | `False` | Drop empty strings from the input. |
-| `show_progress_bar` | Boolean | `False` | Track large bulk embeddings. |
-
-### 3. Connection & Advanced Kwargs
-
-Low-level settings for connection handling and tokenization.
+LAMB extends LangChain's components via [`src/lamb/rate_limited_chat.py`](src/lamb/rate_limited_chat.py) with thread-safe client-side rate limiting and proxy integration:
 
 | TOML Key Path (under `tasks.default` or agent section) | Type | Default | Description |
 | --- | --- | --- | --- |
-| `timeout` | Integer | `None` | API request timeout in seconds. |
-| `max_retries` | Integer | `2` | Maximum retry attempts for failed API calls. |
-| `streaming` | Boolean | `False` | Enable real-time token streaming. |
-| `tiktoken_enabled` | Boolean | `True` | Enable local token counting. |
-| `tiktoken_model_name` | String | `None` | Override for token counting model. |
-| `model_kwargs` | Dict | `None` | Extra parameters for the provider. |
-| `default_headers` | Dict | `None` | Custom HTTP headers. |
-| `default_query` | Dict | `None` | Custom URL query parameters. |
+| `requests_per_minute` | Float | `0.0` | Maximum Requests Per Minute (RPM) allowed. When `> 0.0`, client-side rate limiting enforces delays between calls to avoid exceeding the RPM budget. Disabled if `0.0`. |
+| `tokens_per_minute` | Integer | `0` | Maximum Tokens Per Minute (TPM) allowed. When `> 0`, client-side rate limiting tracks token usage across a rolling 60-second window (estimating input tokens via `tiktoken` and adding actual usage from response metadata) and pauses execution when the limit is approached or exceeded. Disabled if `0`. |
+| `use_litellm` | Boolean | `true` | When `true`, automatically configures `base_url` and fallback credentials to route requests through the local LiteLLM proxy (`http://<litellm_host>:<litellm_port>/v1`). Set to `false` to communicate directly with custom or provider endpoints. |
 
 ---
 
@@ -243,8 +216,8 @@ Low-level settings for connection handling and tokenization.
 lamb migrate -f core.cpp --alias v2_map \
   --verbose \
   --summarization-threshold 4096 \
-  --configure-migration '{"model": "o1", "seed": 42}' \
-  --configure-summarization '{"temperature": 0.0, "stop": ["END"]}'
+  --configure-migration '{"model": "o1", "seed": 42, "requests_per_minute": 30.0}' \
+  --configure-summarization '{"temperature": 0.0, "tokens_per_minute": 50000}'
 ```
 
 ### Using TOML Configuration
@@ -255,6 +228,8 @@ verbose = true
 
 [tasks.default]
 model = "gpt-4o-mini"
+requests_per_minute = 60.0
+tokens_per_minute = 100000
 
 [tasks.migration]
 summarization_threshold = 4096
@@ -262,11 +237,10 @@ max_attempts = 3
 
 [tasks.migration.migration]
 model = "o1"
-seed = 42
+temperature = 0.2
 
 [tasks.migration.summarization]
 temperature = 0.0
-stop = ["END"]
 ```
 
 ---
